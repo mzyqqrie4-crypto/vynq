@@ -1,5 +1,13 @@
 # vynq development log
 
+## 2026-11-01: Two accounts on two physical phones (roadmap acceptance)
+
+- Second phone: realme 14x 5G (RMX3943, Android 16), paired over Wi-Fi debugging. Latest build (sign-out device fix) installed on both phones; the Xiaomi update kept its session.
+- Owner signed in on the realme with a second email and claimed @test.
+- Server check (admin API, emails masked in output): 2 users, 2 profiles, 2 devices. @mzyqqrie → "Xiaomi 17 Pro"; @test → "realme 14x 5G". Each device belongs to its own account; no shared device ids. No crashes in the realme's crash log.
+- Cross-account visibility isn't re-checked from the phones (that would need each user's token); it's covered by the live smoke test (own-row RLS, device isolation).
+- **Remaining for Phase 2:** account deletion from the app.
+
 ## 2026-11-01: Live Supabase project
 
 - Created `vynq` (ap-southeast-1, nearest to Malaysia). Your signup's default Ireland project is untouched.
