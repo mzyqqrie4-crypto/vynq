@@ -1,6 +1,6 @@
-// Deletes the calling user's account. Removing the auth user cascades to
-// profiles and devices (see migrations). Storage purge is added here once
-// buckets exist (Phase 3 attachments, avatars).
+// Deletes the calling user's account. Their encrypted attachment blobs are
+// removed from Storage first; removing the auth user then cascades to
+// profiles, devices, keys, contacts and mailbox rows (see migrations).
 //
 // The service-role key is provided by the Supabase runtime as an env var and
 // never leaves the server.
@@ -24,10 +24,28 @@ Deno.serve(async (req) => {
   // Resolve the user from their own access token; never trust a body field.
   const { data, error } = await admin.auth.getUser(jwt);
   if (error || !data.user) return json(401, { error: "not_authenticated" });
+  const userId = data.user.id;
 
-  const { error: deleteError } = await admin.auth.admin.deleteUser(data.user.id);
+  // Attachments live under "<user id>/" in the private bucket.
+  const bucket = admin.storage.from("attachments");
+  for (;;) {
+    const { data: files, error: listError } = await bucket.list(userId, { limit: 1000 });
+    if (listError) {
+      console.error("delete-account: storage list failed"); // no user data in logs
+      return json(500, { error: "delete_failed" });
+    }
+    if (!files || files.length === 0) break;
+    const { error: removeError } = await bucket.remove(files.map((f) => `${userId}/${f.name}`));
+    if (removeError) {
+      console.error("delete-account: storage remove failed");
+      return json(500, { error: "delete_failed" });
+    }
+    if (files.length < 1000) break;
+  }
+
+  const { error: deleteError } = await admin.auth.admin.deleteUser(userId);
   if (deleteError) {
-    console.error("delete-account failed", deleteError.status); // no user data in logs
+    console.error("delete-account failed", deleteError.status);
     return json(500, { error: "delete_failed" });
   }
   return json(200, { deleted: true });

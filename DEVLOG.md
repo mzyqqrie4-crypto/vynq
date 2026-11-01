@@ -1,5 +1,57 @@
 # vynq development log
 
+## 2026-11-01: Phase 3 — end-to-end encrypted messaging (branch `phase3/messaging`)
+
+**Implemented**
+- Backend migration `20261102000000_messaging.sql`: contacts (request by exact username, accept, remove), per-device Signal keys (identity key immutable; signed, Kyber-1024 last-resort and one-time pre-keys; one-time keys popped atomically), ciphertext-only mailbox written/read only through RPCs that check device ownership and accepted-contact state, 30-day expiry, delete on acknowledgement, Realtime publication, private `attachments` bucket readable only by the sender's contacts. `delete-account` now also purges the user's attachments.
+- Android: libsignal 0.105.0 (from Signal's own Maven repo, scoped to `org.signal`): PQXDH + Double Ratchet, each device addressed separately with its identity key pinned on first use; plaintext padded to 160-byte blocks; 60-digit safety numbers. Attachments: per-file AES-256-GCM key + SHA-256 digest inside the Signal message; photos re-encoded first so EXIF/location never leaves the phone. One SQLCipher database per device, key wrapped by the Android Keystore, wiped on sign-out.
+- Screens: Contacts (add/accept/decline/cancel), Chats (real conversations, unread counts), chat (text, photos, retry, encrypted/verified status), safety number screen (mark verified; a new device for a contact clears it and adds a notice).
+- **Notifications without Google push** (owner request, for phones with China ROMs): local notifications after on-device decryption, lock screen shows only "New message", preview setting; a foreground service keeps the Realtime connection (on by default, can be hidden or turned off), a 15-minute WorkManager safety net, restart after reboot/update; Settings → Notifications checklist with links to Xiaomi/OPPO/realme/OnePlus/vivo/Huawei/Honor autostart and battery screens. See docs/01-architecture.md §7.
+- APK size: libsignal's desktop natives and test library excluded, native symbols stripped (NDK 29), arm64 only: 639 MB → 47 MB debug.
+
+**Tested (executed)**
+- Backend: 48/48 policy tests (23 new). Live: `backend/e2e/messaging-smoke.mjs` 7/7 on the real project (contacts, bundle popping, exact mailbox bytes, storage: contact can read / stranger and anon can't / can't write into another user's folder, Realtime notification, deletion purges attachments and contacts).
+- Android: 55/55 JVM tests, including 15 crypto tests and 11 two-phone scenarios that run the real libsignal (desktop build, Java 21): offline queue, replay and tamper rejection, forged pre-key refused, swapped identity key refused, new-device warning, sync to own devices, duplicate delivery, photo integrity, key top-up.
+- Real phones (Xiaomi 17 Pro @mzyqqrie ↔ realme 14x 5G @zyqqrie2, Wi-Fi debugging):
+  - Contact request and accept; text both ways; photo delivered; safety numbers matched on both phones and were marked verified (owner confirmed).
+  - **Offline then online:** vynq force-stopped on the realme, message sent from the Xiaomi. The server held one 266-byte type-2 envelope; none of the message's words appeared in the bytes (**ciphertext only, verified by query**). Opening the realme fetched, decrypted and cleared it within seconds. (A first attempt didn't count: the realme was reopened 40 s after being closed.)
+  - **Notifications with vynq in the background and the screen off:** Xiaomi (HyperOS CN) and realme (ColorOS) both showed the message notification. On the Xiaomi this needed notification permission, Autostart and battery "No restrictions"; before Autostart was allowed, HyperOS blocked the post-update restart.
+  - Both phones have Google Play services, so "no Google services at all" wasn't tested on a device. vynq doesn't use them either way.
+
+- **New device:** the realme signed out and back in (same account, new device). The Xiaomi showed "has a new device, so your safety number with them changed" and the Verified badge went away (owner confirmed).
+- **Bug found and fixed in that test:** sign-out wiped the device's keys but left it active on the server, so the Xiaomi kept encrypting to the dead device (4 messages lost) and every sign-out used up a device slot. Sign-out now calls `revoke_device` first (also drops its keys and undelivered mail). The dead device from the test was retired by hand, as the fix would have done.
+
+- **Sign-out keeps history** (owner request): each account on a phone has its own device id, remembered across sign-out. Tested on the realme: signed out (normal), the Xiaomi sent a message meanwhile, signed back in with the same email: old history still there, the new message arrived (owner confirmed); server shows the same device (no new device, no new keys) and an empty mailbox. "Sign out and erase" retires the device and deletes local data (unit-tested); deleting the account does too. This replaces the sign-out-revokes-device fix above for normal sign-out.
+
+- **History across phones** (owner decision: recovery key). Every text/photo message is also stored on the server encrypted with a per-account history key only the account's phones hold (AES-256-GCM, bound to the record id). A new phone gets the key by approval on an existing phone (sent over Signal) or with the 40-character recovery key, which wraps it (HKDF + GCM; the server stores only the wrapped key). Deleted with the account. Backend 55/55 (7 new), Android 65/65 (3 crypto + 5 two-phone history tests: recovery key, approval, no hand-over without approval, wrong key refused, messages received while locked backed up later).
+  - On the phones: the Xiaomi set up @mzyqqrie's history and backed up all 46 existing messages. The realme signed out of @zyqqrie2 (history kept) and signed in as @mzyqqrie, asked for history, the Xiaomi approved, and the full conversation appeared (owner confirmed). Server: @mzyqqrie has 2 phones, 46 records; the realme keeps both accounts' databases separately.
+  - Not done on a phone: unlocking with the recovery key (unit-tested only).
+
+**Phase 3 acceptance (docs/04-roadmap.md)**
+| Criterion | Result |
+|---|---|
+| Android↔Android delivered while recipient offline then online | ✅ on the two phones |
+| Server DB contains only ciphertext (verified by query) | ✅ envelope bytes checked for the message's words |
+| Safety-number verification works | ✅ same digits on both phones, marked verified |
+| Key change triggers warning | ✅ new device → notice + verification cleared |
+| Attachment round-trip with integrity check | ✅ photo on the phones; tampering rejected in tests |
+| Encryption unit tests pass | ✅ 15 crypto + 11 messaging scenarios on real libsignal |
+
+**Not verified / known gaps**
+- Battery cost of the background connection: not measured.
+- After the phone kills vynq (e.g. swiped away on HyperOS), messages wait until the periodic job or next app start; calls will need a decision on FCM / vendor push (architecture §7, open decision).
+- The server sees who messages whom and when (no sealed sender yet), and the OS sees notification text if previews are on.
+- New-device approval from an existing device (threat model T4) isn't built; contacts are warned instead.
+- Unit tests now need Java 21 (CI installs it; locally a portable Temurin 21 is configured in the user's Gradle settings).
+- A phone signed out for more than 30 days loses mail sent in that time (mailbox expiry). Signed-out devices stay active on the server by design; a stale-device cleanup belongs in Phase 8.
+- Encrypted history: the server sees how many messages an account has, their sizes and when they were stored, not their content. Anyone with the recovery key *and* the account's email can read the history. Someone who takes over the email can register a phone but still needs approval on an existing phone or the recovery key. Losing every phone and the recovery key loses the history, by design.
+- History on a signed-out phone stays readable to anyone who can unlock the phone *and* break into app storage (it's encrypted with a Keystore key, not with the account). Use "Sign out and erase" before handing a phone over.
+
+**Blockers:** none.
+
+**Next action:** you review and merge PR #2. Then Phase 4 (calls), which starts with the push decision in architecture §7.
+
+
 ## 2026-11-01: Phase 2 complete — accounts
 
 **Last check: account deletion from the app.** The owner deleted @test from Settings on the realme. The phone's session file and device id were wiped and it returned to Welcome. Server afterwards: 1 user, 1 profile, 1 device. @test's profile and device were removed by the cascade; @mzyqqrie and the Xiaomi untouched.

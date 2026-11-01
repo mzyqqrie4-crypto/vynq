@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -52,7 +53,7 @@ class SupabaseAuthRepository(
 
     /** Reads the stored session. Call once at startup, off the main thread. */
     suspend fun restore() {
-        val restored = withContext(io) { store.load() }
+        val restored = withContext(io) { store.load()?.also { device.bind(it.userId) } }
         session = restored
         publish()
     }
@@ -75,21 +76,27 @@ class SupabaseAuthRepository(
         setSession(parseSession(body))
     }
 
-    override suspend fun signOut() {
-        // Revoke server-side first so a copied refresh token is useless; never
-        // block sign-out on the network.
-        runCatching { call("POST", "/auth/v1/logout?scope=local", null, token = accessToken()) }
+    override suspend fun signOut(eraseThisDevice: Boolean) {
+        val userId = session?.userId
+        // Never block sign-out on the network, but try, in this order:
+        // 1. Erasing only: retire this device, since its keys are about to be
+        //    deleted (the server also drops its undelivered mail). A normal sign-out
+        //    keeps the device so mail waits for the next sign-in.
+        // 2. Revoke the refresh token so a copied one is useless.
+        runCatching {
+            val token = accessToken()
+            if (eraseThisDevice) runCatching {
+                call("POST", "/rest/v1/rpc/revoke_device", buildJsonObject { put("p_device_id", device.id) }, token)
+            }
+            call("POST", "/auth/v1/logout?scope=local", null, token = token)
+        }
+        if (eraseThisDevice && userId != null) withContext(io) { device.forget(userId) }
         forgetSession()
     }
 
     override suspend fun forgetSession() {
         session = null
-        withContext(io) {
-            store.clear()
-            // The old id stays bound to the old account on the server, so the
-            // next sign-in (possibly someone else) registers as a new device.
-            device.reset()
-        }
+        withContext(io) { store.clear() }
         publish()
     }
 
@@ -150,8 +157,32 @@ class SupabaseAuthRepository(
         }, token)
     }
 
+    // --- messaging backend ---------------------------------------------------------
+
+    override val deviceId: String get() = device.id
+    override val deviceName: String get() = device.name
+
+    override val realtimeUrl: String =
+        base.replaceFirst("https://", "wss://") + "/realtime/v1/websocket?apikey=$anonKey&vsn=1.0.0"
+
+    override suspend fun rpc(function: String, args: JsonObject): JsonElement = authed { token ->
+        val body = call("POST", "/rest/v1/rpc/$function", args, token)
+        if (body.isBlank()) JsonNull else json.parseToJsonElement(body)
+    }.getOrThrow()
+
+    override suspend fun upload(path: String, bytes: ByteArray) = authed<Unit> { token ->
+        send(Request.Builder().url("$base/storage/v1/object/attachments/$path")
+            .post(bytes.toRequestBody(BLOB_TYPE)).withAuth(token).build())
+    }.getOrThrow()
+
+    override suspend fun download(path: String): ByteArray = authed { token ->
+        send(Request.Builder().url("$base/storage/v1/object/attachments/$path").get().withAuth(token).build())
+    }.getOrThrow()
+
     override suspend fun deleteAccount(): Result<Unit> = authed { token ->
+        val userId = session?.userId
         call("POST", "/functions/v1/delete-account", JsonObject(emptyMap()), token)
+        if (userId != null) withContext(io) { device.forget(userId) }
         forgetSession()
     }
 
@@ -167,7 +198,7 @@ class SupabaseAuthRepository(
     }
 
     private suspend fun setSession(s: Session) {
-        withContext(io) { store.save(s) }
+        withContext(io) { device.bind(s.userId); store.save(s) }
         session = s
         publish()
     }
@@ -217,6 +248,21 @@ class SupabaseAuthRepository(
         }
     }
 
+    private fun Request.Builder.withAuth(token: String) =
+        header("apikey", anonKey).header("Authorization", "Bearer $token")
+
+    private suspend fun send(request: Request): ByteArray = withContext(io) {
+        try {
+            http.newCall(request).execute().use { response ->
+                val bytes = response.body.bytes()
+                if (!response.isSuccessful) throw errorFor(response.code, bytes.decodeToString())
+                bytes
+            }
+        } catch (e: IOException) {
+            throw AccountError.Network()
+        }
+    }
+
     private fun errorFor(status: Int, body: String): AccountError {
         val o = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
         // GoTrue: {"error_code": "...", "msg": "..."}; PostgREST/RPC: {"code": "PT409", "message": "username_taken"}
@@ -241,6 +287,7 @@ class SupabaseAuthRepository(
 
     private companion object {
         val JSON_TYPE = "application/json".toMediaType()
+        val BLOB_TYPE = "application/octet-stream".toMediaType()
         val EMPTY_BODY = ByteArray(0).toRequestBody(null)
         const val REFRESH_MARGIN_S = 60
     }

@@ -36,7 +36,9 @@ import app.vynq.designsystem.component.pressable
 import app.vynq.designsystem.icon.VynqIcons
 import app.vynq.designsystem.theme.VynqSpacing
 import app.vynq.designsystem.theme.VynqTheme
+import app.vynq.ui.Routes
 import app.vynq.ui.calls.CallsTab
+import app.vynq.ui.messaging.HistoryApprovalDialog
 import app.vynq.ui.chats.ChatsTab
 import app.vynq.ui.contacts.ContactsTab
 import app.vynq.ui.settings.SettingsTab
@@ -64,12 +66,13 @@ fun MainScreen(onOpen: (String) -> Unit) {
             label = "tab",
         ) { current ->
             when (current) {
-                Tab.Chats -> ChatsTab(onFindPeople = { tab = Tab.Contacts })
+                Tab.Chats -> ChatsTab(onFindPeople = { tab = Tab.Contacts }, onOpenChat = { onOpen(Routes.chat(it)) }, onOpen = onOpen)
                 Tab.Calls -> CallsTab(onFindPeople = { tab = Tab.Contacts })
-                Tab.Contacts -> ContactsTab()
+                Tab.Contacts -> ContactsTab(onOpenChat = { onOpen(Routes.chat(it)) })
                 Tab.Settings -> SettingsTab(onOpen = onOpen)
             }
         }
+        HistoryApprovalDialog()
         TabBar(
             selected = tab,
             onSelect = { tab = it },

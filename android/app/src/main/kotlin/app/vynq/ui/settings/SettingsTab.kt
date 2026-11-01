@@ -104,6 +104,11 @@ fun SettingsTab(onOpen: (String) -> Unit) {
                     onClick = { onOpen(Routes.USERNAME_CHANGE) },
                 )
             }
+            if (signedIn != null) {
+                RowDivider()
+                ListRow("Message history", icon = VynqIcons.Lock, subtitle = "Encrypted, on every phone you use",
+                    onClick = { onOpen(Routes.HISTORY) })
+            }
             RowDivider()
             ListRow("Connected devices", icon = VynqIcons.Devices, enabled = false, disabledReason = "Coming soon")
             if (signedIn != null) {
@@ -126,13 +131,8 @@ fun SettingsTab(onOpen: (String) -> Unit) {
             RowDivider()
             ListRow(
                 "Notifications", icon = VynqIcons.Bell, iconTint = VynqPalette.Pink400,
-                subtitle = "Opens system settings",
-                onClick = {
-                    context.startActivity(
-                        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
-                    )
-                },
+                subtitle = "Make sure messages arrive",
+                onClick = { onOpen(Routes.NOTIFICATIONS) },
             )
         }
 
@@ -155,9 +155,14 @@ fun SettingsTab(onOpen: (String) -> Unit) {
     when (confirm) {
         AccountAction.SignOut -> VynqConfirm(
             title = "Sign out?",
-            message = "This device's session is revoked. You can sign back in with a new email code.",
+            message = "Your messages stay on this phone, encrypted, and come back when you sign in again here. " +
+                "Messages sent to you meanwhile wait up to 30 days.\n\n" +
+                "Giving this phone to someone else? Sign out and erase instead: this phone is removed from your " +
+                "account and its messages are deleted.",
             confirm = "Sign out",
             onConfirm = { confirm = null; scope.launch { auth.signOut() } },
+            secondary = "Sign out and erase",
+            onSecondary = { confirm = null; scope.launch { auth.signOut(eraseThisDevice = true) } },
             onDismiss = { confirm = null },
         )
         AccountAction.Delete -> VynqConfirm(

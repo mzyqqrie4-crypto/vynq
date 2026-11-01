@@ -89,11 +89,18 @@ Design outline (Phase 3):
 
 The UI will show "End-to-end encrypted" for a call **only** when the frame cryptor reports an active key on both sides. Otherwise it shows "Encrypted in transit".
 
-## 7. Push & background
+## 7. Push & background — *revised 2026-11-01*
 
-- Android: FCM **data-only** high-priority messages carrying no message content, just "you have mail" or an encrypted call invite. Notification channels. Incoming calls use `androidx.core:core-telecom` (ConnectionService) with a full-screen intent. During a call, a foreground service of type `camera|microphone|phoneCall`.
+Message delivery does **not** depend on any push provider (Phase 3, `android/.../notify/`):
+- While the app is visible, or while the **background connection** foreground service runs (type `specialUse`, on by default, user can turn it off or hide its notification), the device listens on Supabase Realtime for new rows in its own mailbox. The Realtime event carries nothing the device couldn't fetch anyway; the device then fetches, decrypts and posts the notification itself.
+- A WorkManager job (~15 min, network required) fetches mail and restarts the service if the OS killed it. `BOOT_COMPLETED` / `MY_PACKAGE_REPLACED` restart it too.
+- Settings → Notifications is a checklist: notification permission and battery exemption (read live), plus deep links to vendor screens apps can't read (Xiaomi Autostart / battery saver / lock-screen pop-ups; OPPO/realme/OnePlus, vivo, Huawei/Honor auto-launch). We open those screens; we never try to bypass the restrictions.
+- Why: many phones sold in China have no Google services, and phones that do (including the test Xiaomi, a CN ROM) throttle apps that aren't on vendor allow-lists. This is the approach Signal uses without Google services. Cost: a persistent connection (heartbeat every 25 s). Battery impact not yet measured.
+
+**Open decision (for Phase 4 calls):** an incoming call must ring a phone whose app process is dead. Options: FCM data-only (needs a Firebase project; a proprietary SDK next to AGPL code needs a licence review), vendor push (Xiaomi MiPush, HeyTap, etc.: vendor accounts, proprietary SDKs, same licence question), or UnifiedPush. The background connection above already covers calls while it's alive.
+
+- Calls: `androidx.core:core-telecom` (ConnectionService) with a full-screen intent; during a call a foreground service of type `camera|microphone|phoneCall`.
 - iOS: APNs with a Notification Service Extension that decrypts locally, plus PushKit VoIP → CallKit for calls (required: every VoIP push must report a call).
-- Xiaomi/HyperOS: aggressive background killing. Onboarding will deep-link to Autostart and battery "No restrictions" settings, with an explanation. We will not try to bypass the restrictions.
 
 ## 8. Local data
 

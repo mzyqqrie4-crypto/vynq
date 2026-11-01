@@ -49,6 +49,13 @@ object VynqIcons {
     val Mail by lazy { icon("mail", "M5.5 6h13A1.5 1.5 0 0 1 20 7.5v9a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 16.5v-9A1.5 1.5 0 0 1 5.5 6z", "M4.5 7l7.5 6 7.5-6") }
     val Gauge by lazy { icon("gauge", "M4.5 16a7.5 7.5 0 1 1 15 0", "M12 16l3.5-4.5", "M12 16h.01") }
 
+    val Photo by lazy {
+        icon("photo", "M6 5.5h12A1.5 1.5 0 0 1 19.5 7v10a1.5 1.5 0 0 1-1.5 1.5H6A1.5 1.5 0 0 1 4.5 17V7A1.5 1.5 0 0 1 6 5.5z",
+            "M4.5 15.5l4-4 3.5 3.5 2.5-2.5 5 5", "M15 10a1.25 1.25 0 1 0 0-2.5 1.25 1.25 0 0 0 0 2.5z")
+    }
+    val Send by lazy { icon("send", "M12 18.5v-13", "M6.5 11L12 5.5l5.5 5.5") }
+    val Warning by lazy { icon("warning", "M12 4.5l8 14H4l8-14z", "M12 10v3.5", "M12 16.25v.25") }
+
     private const val STROKE = 1.75f
 
     private fun icon(name: String, vararg paths: String): ImageVector =
