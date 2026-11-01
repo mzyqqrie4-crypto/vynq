@@ -7,7 +7,17 @@
 - **Live smoke test 10/10** (`backend/e2e/smoke.mjs`): sign-in via code, wrong code → `otp_expired`, own-row RLS, username claim + taken/look-alike/reserved errors in the exact shape the app maps, no direct username writes, lookup without email, device isolation + takeover block, refresh rotation + sign-out revocation, deletion cascade. 0 users left afterwards.
 - App: publishable key + URL in git-ignored `local.properties`; `Authorization` now sent only with a user token (new-style keys belong in `apikey` only).
 - ~~Blocker: sign-in emails.~~ **Resolved:** custom SMTP via a dedicated Gmail account (no domain yet); "Your vynq code" template live. A real code sent through the app's endpoint arrived in the owner's inbox (confirmed by the owner). This created one real account (owner's email, no username yet).
-- **Remaining for Phase 2:** run the app on two physical phones with two accounts (sign-in, username, device registration, sign-out, delete).
+
+## 2026-11-01: First real device — Xiaomi 17 Pro (Android 17, HyperOS 4.0), over Wi-Fi debugging
+
+- USB failed (charge-only cable / "Device Descriptor Request Failed"); wireless debugging worked.
+- Cold start 300 ms (debug build). No crashes in any run. Edge-to-edge correct.
+- Owner signed in with a real emailed code, claimed @mzyqqrie; profile + device verified server-side.
+- Fixed: device name came from `Build.MODEL` ("25098PN5AC"); now uses the system device name ("Xiaomi 17 Pro"). Device record refreshes on each signed-in start.
+- App update kept the session (no re-sign-in). Sign-out → Welcome; reopen stayed signed out; sign-in again skipped the username step; still one device record (no duplicate).
+- Session file `no_backup/session.v1` (1,099 B) checked on the phone: no plaintext token, email or username strings.
+- One check couldn't be done the way I wanted: a direct database query for revoked refresh tokens was blocked (it turned TLS verification off). Revocation on sign-out is covered by the live smoke test instead.
+- **Remaining for Phase 2:** a second account on a second phone, and account deletion from the app.
 
 ## 2026-11-01: Phase 2 in progress — accounts (code complete, not yet run against Supabase)
 
