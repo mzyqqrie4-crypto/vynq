@@ -53,7 +53,7 @@ class SupabaseAuthRepository(
 
     /** Reads the stored session. Call once at startup, off the main thread. */
     suspend fun restore() {
-        val restored = withContext(io) { store.load() }
+        val restored = withContext(io) { store.load()?.also { device.bind(it.userId) } }
         session = restored
         publish()
     }
@@ -76,29 +76,27 @@ class SupabaseAuthRepository(
         setSession(parseSession(body))
     }
 
-    override suspend fun signOut() {
+    override suspend fun signOut(eraseThisDevice: Boolean) {
+        val userId = session?.userId
         // Never block sign-out on the network, but try, in this order:
-        // 1. Retire this device: its keys are about to be wiped, so contacts must
-        //    stop encrypting to it (the server also drops its undelivered mail).
+        // 1. Erasing only: retire this device, since its keys are about to be
+        //    deleted (the server also drops its undelivered mail). A normal sign-out
+        //    keeps the device so mail waits for the next sign-in.
         // 2. Revoke the refresh token so a copied one is useless.
         runCatching {
             val token = accessToken()
-            runCatching {
+            if (eraseThisDevice) runCatching {
                 call("POST", "/rest/v1/rpc/revoke_device", buildJsonObject { put("p_device_id", device.id) }, token)
             }
             call("POST", "/auth/v1/logout?scope=local", null, token = token)
         }
+        if (eraseThisDevice && userId != null) withContext(io) { device.forget(userId) }
         forgetSession()
     }
 
     override suspend fun forgetSession() {
         session = null
-        withContext(io) {
-            store.clear()
-            // The old id stays bound to the old account on the server, so the
-            // next sign-in (possibly someone else) registers as a new device.
-            device.reset()
-        }
+        withContext(io) { store.clear() }
         publish()
     }
 
@@ -181,7 +179,9 @@ class SupabaseAuthRepository(
     }.getOrThrow()
 
     override suspend fun deleteAccount(): Result<Unit> = authed { token ->
+        val userId = session?.userId
         call("POST", "/functions/v1/delete-account", JsonObject(emptyMap()), token)
+        if (userId != null) withContext(io) { device.forget(userId) }
         forgetSession()
     }
 
@@ -197,7 +197,7 @@ class SupabaseAuthRepository(
     }
 
     private suspend fun setSession(s: Session) {
-        withContext(io) { store.save(s) }
+        withContext(io) { device.bind(s.userId); store.save(s) }
         session = s
         publish()
     }

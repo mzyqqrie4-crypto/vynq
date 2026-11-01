@@ -19,13 +19,18 @@ interface AuthRepository {
     /** Exchanges the emailed code for a session, stored encrypted on this device. */
     suspend fun verifyEmailCode(email: String, code: String): Result<Unit>
 
-    /** Revokes the refresh token on the server (best effort) and wipes the local session. */
-    suspend fun signOut()
+    /**
+     * Revokes the refresh token on the server (best effort) and clears the local
+     * session. This phone stays the same device for this account, so its
+     * messages are kept for the next sign-in. With [eraseThisDevice] the device
+     * is removed from the account and its local data is deleted instead.
+     */
+    suspend fun signOut(eraseThisDevice: Boolean = false)
 
     /** A non-expired access token, refreshing first if needed. Signs out if the session is dead. */
     suspend fun accessToken(): String
 
-    /** Wipes the local session without a network call (after account deletion). */
+    /** Clears the local session without a network call (expired session, deleted account). */
     suspend fun forgetSession()
 }
 
@@ -85,7 +90,7 @@ class UnconfiguredAuthRepository : AccountService {
 
     override suspend fun requestEmailCode(email: String) = unavailable<Unit>()
     override suspend fun verifyEmailCode(email: String, code: String) = unavailable<Unit>()
-    override suspend fun signOut() = Unit
+    override suspend fun signOut(eraseThisDevice: Boolean) = Unit
     override suspend fun accessToken(): String = throw AccountError.NotConfigured()
     override suspend fun forgetSession() = Unit
     override suspend fun profile() = unavailable<Profile>()

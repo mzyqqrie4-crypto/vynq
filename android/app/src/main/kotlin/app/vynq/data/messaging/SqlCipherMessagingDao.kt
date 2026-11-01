@@ -21,8 +21,8 @@ import net.zetetic.database.sqlcipher.SQLiteDatabase
  * key is stored wrapped by a non-exportable Android Keystore key, in no-backup
  * storage, so the file is unreadable off the device and isn't in backups.
  *
- * One database per device id: signing out starts a new device, and
- * [deleteAll] removes every older database and its key.
+ * One database per device id, i.e. per account on this phone. It survives
+ * sign-out; [deleteAllExcept] removes the ones this phone has forgotten.
  */
 class SqlCipherMessagingDao private constructor(private val db: SQLiteDatabase) : MessagingDao {
     override val changes = MutableStateFlow(0L)
@@ -153,12 +153,12 @@ class SqlCipherMessagingDao private constructor(private val db: SQLiteDatabase) 
             return SqlCipherMessagingDao(db)
         }
 
-        /** Removes every messaging database and key except the one for [keepDeviceId]. */
-        fun deleteAllExcept(context: Context, keepDeviceId: String?) {
+        /** Removes every messaging database (and its key) whose device isn't in [keep]. */
+        fun deleteAllExcept(context: Context, keep: Set<String>) {
             context.noBackupFilesDir.listFiles().orEmpty()
-                .filter { it.name.startsWith(PREFIX) && (keepDeviceId == null || !it.name.startsWith("$PREFIX$keepDeviceId")) }
+                .filter { it.name.startsWith(PREFIX) && keep.none { id -> it.name.startsWith("$PREFIX$id") } }
                 .forEach { it.delete() }
-            DatabaseKey.deleteAllExcept(context, keepDeviceId)
+            DatabaseKey.deleteAllExcept(context, keep)
         }
 
         private val SCHEMA = listOf(
@@ -199,9 +199,9 @@ private object DatabaseKey {
         return key
     }
 
-    fun deleteAllExcept(context: Context, keepDeviceId: String?) {
+    fun deleteAllExcept(context: Context, keep: Set<String>) {
         context.noBackupFilesDir.listFiles().orEmpty()
-            .filter { it.name.startsWith(PREFIX) && it.name != "$PREFIX$keepDeviceId" }
+            .filter { it.name.startsWith(PREFIX) && it.name.removePrefix(PREFIX) !in keep }
             .forEach { it.delete() }
     }
 

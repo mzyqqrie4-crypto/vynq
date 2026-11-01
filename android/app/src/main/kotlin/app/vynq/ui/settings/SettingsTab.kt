@@ -150,9 +150,14 @@ fun SettingsTab(onOpen: (String) -> Unit) {
     when (confirm) {
         AccountAction.SignOut -> VynqConfirm(
             title = "Sign out?",
-            message = "This device's session is revoked. You can sign back in with a new email code.",
+            message = "Your messages stay on this phone, encrypted, and come back when you sign in again here. " +
+                "Messages sent to you meanwhile wait up to 30 days.\n\n" +
+                "Giving this phone to someone else? Sign out and erase instead: this phone is removed from your " +
+                "account and its messages are deleted.",
             confirm = "Sign out",
             onConfirm = { confirm = null; scope.launch { auth.signOut() } },
+            secondary = "Sign out and erase",
+            onSecondary = { confirm = null; scope.launch { auth.signOut(eraseThisDevice = true) } },
             onDismiss = { confirm = null },
         )
         AccountAction.Delete -> VynqConfirm(

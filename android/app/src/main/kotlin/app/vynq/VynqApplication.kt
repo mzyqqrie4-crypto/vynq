@@ -33,12 +33,14 @@ class AppContainer(context: Context) {
     val backendConfigured: Boolean =
         BuildConfig.SUPABASE_URL.startsWith("https://") && BuildConfig.SUPABASE_ANON_KEY.isNotEmpty()
 
+    private val deviceIdentity = InstallDeviceIdentity(context)
+
     private val accounts: AccountService = if (backendConfigured) {
         SupabaseAuthRepository(
             baseUrl = BuildConfig.SUPABASE_URL,
             anonKey = BuildConfig.SUPABASE_ANON_KEY,
             store = KeystoreSessionStore(context),
-            device = InstallDeviceIdentity(context),
+            device = deviceIdentity,
         ).also { repo -> appScope.launch { repo.restore() } }
     } else {
         UnconfiguredAuthRepository()
@@ -48,7 +50,7 @@ class AppContainer(context: Context) {
     val accountRepository: AccountRepository = accounts
 
     /** End-to-end encrypted messaging for whoever is signed in on this device. */
-    val messaging = MessagingService(context, accounts, accounts, accounts, preferences, appScope)
+    val messaging = MessagingService(context, accounts, accounts, accounts, deviceIdentity, preferences, appScope)
         .also { if (backendConfigured) it.attach() }
 }
 

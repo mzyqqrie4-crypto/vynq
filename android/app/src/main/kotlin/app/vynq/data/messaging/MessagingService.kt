@@ -8,6 +8,7 @@ import app.vynq.data.auth.AccountRepository
 import app.vynq.data.auth.AuthRepository
 import app.vynq.data.auth.AuthState
 import app.vynq.data.auth.BackendApi
+import app.vynq.data.auth.DeviceIdentity
 import app.vynq.data.prefs.PreferencesRepository
 import app.vynq.notify.BackgroundDelivery
 import app.vynq.notify.Notifier
@@ -31,9 +32,10 @@ import kotlinx.coroutines.withContext
 class MessagingSession(val messenger: Messenger, val dao: MessagingDao, val userId: String)
 
 /**
- * Opens the encrypted store and starts messaging when someone signs in, and
- * wipes all local messaging data when they sign out (the next sign-in is a
- * new device).
+ * Opens the encrypted store and starts messaging when someone signs in. On
+ * sign-out the store is closed but kept, so the same account finds its
+ * history when it signs back in. Data of devices this phone has forgotten
+ * ("sign out and erase", deleted account) is deleted.
  *
  * Delivery: while the app is visible, or while the background connection
  * service runs, it listens on Realtime for new mail. Otherwise a periodic job
@@ -44,6 +46,7 @@ class MessagingService(
     private val auth: AuthRepository,
     private val account: AccountRepository,
     private val api: BackendApi,
+    private val device: DeviceIdentity,
     private val prefs: PreferencesRepository,
     private val scope: CoroutineScope,
 ) {
@@ -70,7 +73,7 @@ class MessagingService(
                     if (auth.state.value is AuthState.SignedOut) {
                         notifier.cancelAll()
                         BackgroundDelivery.stop(context)
-                        withContext(Dispatchers.IO) { wipe(context, keep = null) }
+                        withContext(Dispatchers.IO) { wipe(context, keep = device.knownIds()) }
                     }
                 } else {
                     open(userId)
@@ -98,7 +101,7 @@ class MessagingService(
     private suspend fun open(userId: String) {
         val deviceId = api.deviceId
         val dao = withContext(Dispatchers.IO) {
-            wipe(context, keep = deviceId) // older devices' data on this phone
+            wipe(context, keep = device.knownIds() + deviceId) // only devices this phone has forgotten
             SqlCipherMessagingDao.open(context, deviceId)
         }
         val messenger = Messenger(api, dao, userId, FileAttachmentCache(attachmentsDir(context, deviceId)))
@@ -166,10 +169,11 @@ class MessagingService(
     companion object {
         private fun attachmentsDir(context: Context, deviceId: String) = File(context.noBackupFilesDir, "attachments-$deviceId")
 
-        fun wipe(context: Context, keep: String?) {
+        /** Deletes the messaging data of every device on this phone except [keep]. */
+        fun wipe(context: Context, keep: Set<String>) {
             SqlCipherMessagingDao.deleteAllExcept(context, keep)
             context.noBackupFilesDir.listFiles().orEmpty()
-                .filter { it.name.startsWith("attachments-") && it.name != "attachments-$keep" }
+                .filter { it.name.startsWith("attachments-") && it.name.removePrefix("attachments-") !in keep }
                 .forEach { it.deleteRecursively() }
         }
     }

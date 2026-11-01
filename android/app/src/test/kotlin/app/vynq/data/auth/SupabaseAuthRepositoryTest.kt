@@ -18,11 +18,19 @@ class SupabaseAuthRepositoryTest {
     private val store = MemoryStore()
     private var now = 1_000_000L
 
+    /** Per-account device ids, like InstallDeviceIdentity, in memory. */
     private val device = object : DeviceIdentity {
-        var generation = 1
-        override val id get() = "6f1f2c1e-0000-4000-8000-00000000000$generation"
+        val ids = mutableMapOf<String, String>()
+        var current: String? = null
+        var created = 0
+        override val id get() = ids.getValue(current!!)
         override val name = "Test Phone"
-        override fun reset() { generation++ }
+        override fun bind(userId: String) {
+            current = userId
+            ids.getOrPut(userId) { "6f1f2c1e-0000-4000-8000-00000000000${++created}" }
+        }
+        override fun forget(userId: String) { ids.remove(userId) }
+        override fun knownIds() = ids.values.toSet()
     }
 
     @Before fun start() = server.start()
@@ -140,46 +148,72 @@ class SupabaseAuthRepositoryTest {
         assertTrue(body.contains("\"p_platform\":\"android\""))
     }
 
-    @Test fun `sign out retires the device and revokes on the server, and clears locally even if the server fails`() = runTest {
+    @Test fun `sign out revokes the session but keeps this device, even if the server fails`() = runTest {
         store.session = Session("access-1", "refresh-1", now + 3600, "user-1", "alice@example.test")
-        server.enqueue(json(500, "{}"))   // revoke_device fails
         server.enqueue(json(500, "{}"))   // logout fails
         val repo = repo(StandardTestDispatcher(testScheduler))
         repo.restore()
-        val oldDevice = device.id
+        val before = device.id
 
         repo.signOut()
-        val revoke = server.takeRequest()
-        assertEquals("/rest/v1/rpc/revoke_device", revoke.url.encodedPath)
-        assertTrue(revoke.body!!.utf8().contains(oldDevice))
         val req = server.takeRequest()
-        assertEquals("/auth/v1/logout", req.url.encodedPath)
+        assertEquals("/auth/v1/logout", req.url.encodedPath)   // no revoke_device: the device stays
         assertEquals("Bearer access-1", req.headers["Authorization"])
         assertNull(store.session)
         assertEquals(AuthState.SignedOut, repo.state.value)
+        assertEquals(before, device.ids["user-1"])
     }
 
-    @Test fun `after sign-out the next account registers as a new device`() = runTest {
+    @Test fun `signing back in with the same account continues as the same device`() = runTest {
         store.session = Session("access-1", "refresh-1", now + 3600, "user-1", "alice@example.test")
-        server.enqueue(json(200, ""))   // register as alice
-        server.enqueue(json(204, ""))   // revoke_device
-        server.enqueue(json(204, ""))   // logout
-        server.enqueue(json(200, tokenBody(access = "access-b").replace("user-1", "user-2")))
-        server.enqueue(json(200, ""))   // register as bob
+        server.enqueue(json(204, ""))                        // logout
+        server.enqueue(json(200, tokenBody(access = "access-2")))
+        server.enqueue(json(200, ""))                        // register
         val repo = repo(StandardTestDispatcher(testScheduler))
         repo.restore()
+        val first = device.id
 
+        repo.signOut()
+        repo.verifyEmailCode("alice@example.test", "123456")
         repo.registerThisDevice()
-        val firstId = device.id
+        repeat(2) { server.takeRequest() }
+        assertTrue(server.takeRequest().body!!.utf8().contains(first))
+    }
+
+    @Test fun `another account on the same phone gets its own device`() = runTest {
+        store.session = Session("access-1", "refresh-1", now + 3600, "user-1", "alice@example.test")
+        server.enqueue(json(204, ""))                                            // logout
+        server.enqueue(json(200, tokenBody(access = "access-b").replace("user-1", "user-2")))
+        server.enqueue(json(200, ""))                                            // register as bob
+        val repo = repo(StandardTestDispatcher(testScheduler))
+        repo.restore()
+        val alices = device.id
+
         repo.signOut()
         repo.verifyEmailCode("bob@example.test", "123456")
         repo.registerThisDevice()
+        repeat(2) { server.takeRequest() }
+        val body = server.takeRequest().body!!.utf8()
+        assertTrue(!body.contains(alices))
+        assertEquals(setOf(alices, device.id), device.knownIds())   // Alice's device (and history) is kept
+    }
 
-        val bodies = List(5) { server.takeRequest().body?.utf8().orEmpty() }
-        assertTrue(bodies[0].contains(firstId))
-        assertTrue(bodies[1].contains(firstId))      // the old device is retired on sign-out
-        assertTrue(bodies[4].contains(device.id))
-        assertTrue(firstId != device.id)
+    @Test fun `sign out and erase retires the device and the next sign-in is a new device`() = runTest {
+        store.session = Session("access-1", "refresh-1", now + 3600, "user-1", "alice@example.test")
+        server.enqueue(json(204, ""))   // revoke_device
+        server.enqueue(json(204, ""))   // logout
+        val repo = repo(StandardTestDispatcher(testScheduler))
+        repo.restore()
+        val old = device.id
+
+        repo.signOut(eraseThisDevice = true)
+        val revoke = server.takeRequest()
+        assertEquals("/rest/v1/rpc/revoke_device", revoke.url.encodedPath)
+        assertTrue(revoke.body!!.utf8().contains(old))
+        assertEquals("/auth/v1/logout", server.takeRequest().url.encodedPath)
+        assertTrue(old !in device.knownIds())
+        device.bind("user-1")
+        assertTrue(device.id != old)
     }
 
     @Test fun `deleting the account clears the session`() = runTest {
@@ -191,6 +225,7 @@ class SupabaseAuthRepositoryTest {
         assertTrue(repo.deleteAccount().isSuccess)
         assertEquals("/functions/v1/delete-account", server.takeRequest().url.encodedPath)
         assertNull(store.session)
+        assertTrue(device.knownIds().isEmpty())   // the deleted account's device is forgotten
     }
 
     @Test fun `a 401 from the API ends the session`() = runTest {
