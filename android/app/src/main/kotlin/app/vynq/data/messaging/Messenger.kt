@@ -83,6 +83,8 @@ class Messenger(
     val historyRequests = MutableStateFlow(loadHistoryRequests())
     /** True until the user confirms they've written the recovery key down. */
     val recoveryKeyPending = MutableStateFlow(dao.get(NS_HISTORY, "recovery_unseen") != null)
+    /** Called for every call signal that arrives (see CallManager). Runs inside sync. */
+    var onCallSignal: ((CallSignal) -> Unit)? = null
     /** Called when another of the user's phones asks for history (for a notification). */
     var onHistoryRequest: ((HistoryRequest) -> Unit)? = null
 
@@ -382,7 +384,12 @@ class Messenger(
             ?: return null
         if (payload.from != sender) return null
         if (payload.control != null) {
-            if (self) handleControl(fromDevice, payload)
+            if (payload.control.startsWith("call_") && payload.callId != null) {
+                onCallSignal?.invoke(CallSignal(payload.control, payload.callId, sender, fromDevice, self,
+                    payload.video ?: true, payload.callKey, payload.reason, payload.sentAt))
+            } else if (self) {
+                handleControl(fromDevice, payload)
+            }
             return null
         }
 
@@ -396,6 +403,30 @@ class Messenger(
         }
         return message.takeIf { withContext(io) { dao.insertMessage(message) } }
     }
+
+    // --- call signalling ------------------------------------------------------------------------
+
+    /**
+     * Sends a call signal end-to-end encrypted to [peer]'s phones, and optionally to
+     * our own other phones (so they stop ringing when we answer here). Returns how
+     * many of the peer's phones it reached.
+     */
+    suspend fun sendCallSignal(
+        peer: String, type: String, callId: String,
+        video: Boolean? = null, callKey: String? = null, reason: String? = null, alsoMine: Boolean = false,
+    ): Int = locked {
+        val payload = WirePayload(id = UUID.randomUUID().toString(), from = userId, sentAt = now(), control = type,
+            callId = callId, video = video, callKey = callKey, reason = reason)
+        val theirs = syncDevices(peer)
+        val reached = sendControl(theirs, payload)
+        if (alsoMine) sendControl(syncDevices(userId), payload)
+        reached
+    }
+
+    /** Adds a line like "Missed video call" to the conversation (not part of the backed-up history). */
+    fun callNote(peer: String, text: String) = systemNote(peer, text)
+
+    fun contactLabel(user: String) = label(user)
 
     // --- encrypted history across phones ---------------------------------------------------------
 

@@ -62,6 +62,8 @@ interface BackendApi {
     val realtimeUrl: String
     suspend fun rpc(function: String, args: JsonObject): JsonElement
     suspend fun upload(path: String, bytes: ByteArray)
+    /** Calls a signed-in Edge Function with a JSON body. */
+    suspend fun function(name: String, args: JsonObject): JsonElement
     suspend fun download(path: String): ByteArray
 }
 
@@ -104,6 +106,7 @@ class UnconfiguredAuthRepository : AccountService {
     override val realtimeUrl = ""
     override suspend fun rpc(function: String, args: JsonObject): JsonElement = throw AccountError.NotConfigured()
     override suspend fun upload(path: String, bytes: ByteArray) = throw AccountError.NotConfigured()
+    override suspend fun function(name: String, args: JsonObject): JsonElement = throw AccountError.NotConfigured()
     override suspend fun download(path: String): ByteArray = throw AccountError.NotConfigured()
 }
 

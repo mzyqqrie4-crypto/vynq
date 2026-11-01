@@ -70,6 +70,24 @@ data class WirePayload(
     val historyKey: String? = null,
     val recoveryKey: String? = null,
     val deviceName: String? = null,
+    /** Call signalling (control = call_*): the call, video or voice, and the media key. */
+    val callId: String? = null,
+    val video: Boolean? = null,
+    val callKey: String? = null,
+    val reason: String? = null,
+)
+
+/** A call signal from a contact (or from one of our own phones, e.g. "answered elsewhere"). */
+data class CallSignal(
+    val type: String,
+    val callId: String,
+    val from: String,
+    val fromDevice: String,
+    val self: Boolean,
+    val video: Boolean = true,
+    val callKey: String? = null,
+    val reason: String? = null,
+    val sentAt: Long,
 )
 
 /** One message in the account's encrypted history (see HistoryCrypto). */

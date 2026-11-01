@@ -86,6 +86,7 @@ dependencies {
     implementation(libs.androidx.sqlite)
     implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.work.runtime)
+    implementation(libs.livekit.android)
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)
