@@ -18,7 +18,7 @@ No Docker or Supabase account needed. The shim (`tests/supabase-shim.sql`) only 
 ## Live project
 `vynq`, ref `tvprnekvjvlmjefesvhu`, region ap-southeast-1 (Singapore). Migration applied, `delete-account` deployed, auth config pushed (6-digit code, 10 min, no confirmation step). The database password is in git-ignored `backend/.env.supabase`.
 
-**Blocked: real sign-in emails.** On the free plan the built-in sender only delivers to your own team's addresses, a few per hour, and Supabase refuses template changes, so the email carries a link instead of the 6-digit code. Fix: configure custom SMTP (Auth → SMTP settings), then uncomment the templates in `config.toml` and run `npx supabase config push`. Chosen for now: a dedicated Gmail account (`smtp.gmail.com`, port 465, app password entered only in the dashboard). Before public use, move to a domain + Resend/Postmark.
+**Email:** custom SMTP through a dedicated Gmail account (`smtp.gmail.com`, port 465; the app password lives only in the dashboard). The "Your vynq code" templates are live and delivery is confirmed. The free built-in sender can't be used: it refuses custom templates and only mails your own team. Before public use, move to a domain + Resend/Postmark; only the dashboard SMTP settings change.
 
 ## End-to-end smoke test (live project, sends no email)
 ```bash

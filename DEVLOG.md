@@ -6,7 +6,8 @@
 - Migration applied, `delete-account` deployed, auth config pushed (6-digit code, 10 min expiry; remote defaults were 8 digits / 1 hour).
 - **Live smoke test 10/10** (`backend/e2e/smoke.mjs`): sign-in via code, wrong code → `otp_expired`, own-row RLS, username claim + taken/look-alike/reserved errors in the exact shape the app maps, no direct username writes, lookup without email, device isolation + takeover block, refresh rotation + sign-out revocation, deletion cascade. 0 users left afterwards.
 - App: publishable key + URL in git-ignored `local.properties`; `Authorization` now sent only with a user token (new-style keys belong in `apikey` only).
-- **Blocker:** sign-in emails. The free built-in sender won't accept a code template and only mails your own address → custom SMTP needed.
+- ~~Blocker: sign-in emails.~~ **Resolved:** custom SMTP via a dedicated Gmail account (no domain yet); "Your vynq code" template live. A real code sent through the app's endpoint arrived in the owner's inbox (confirmed by the owner). This created one real account (owner's email, no username yet).
+- **Remaining for Phase 2:** run the app on two physical phones with two accounts (sign-in, username, device registration, sign-out, delete).
 
 ## 2026-11-01: Phase 2 in progress — accounts (code complete, not yet run against Supabase)
 
