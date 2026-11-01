@@ -23,6 +23,9 @@ max_frequency = "60s"
 [auth.sms]
 enable_signup = false
 
+[functions.livekit-token]
+verify_jwt = true
+
 [functions.delete-account]
 verify_jwt = true
 
