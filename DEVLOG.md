@@ -1,5 +1,30 @@
 # vynq development log
 
+## 2026-11-01: Phase 2 in progress — accounts (code complete, not yet run against Supabase)
+
+**Implemented** (branch `phase2/auth-profiles`)
+- Repo on GitHub (private). Git + GitHub CLI installed.
+- Backend (`backend/`): migration for profiles, usernames, devices, rate limits. RLS on everything, column-level grants, every write through SECURITY DEFINER RPCs in a schema API roles can't reach. Usernames are ASCII-only; a "skeleton" (separators dropped; 0/o, 1/i/l, 5/s, rn/m, vv/w, cl/d folded) blocks look-alikes and reserved names. Max 5 devices; a device id can't move between accounts; revocation is final. `delete-account` Edge Function.
+- Android: `SupabaseAuthRepository` (thin OkHttp client; no SDK): email OTP, verify, single-flight token refresh, server-side sign-out, profile, username claim, device registration, account deletion. Session encrypted with an Android Keystore AES-GCM key in no-backup storage. Endpoint comes from git-ignored `local.properties`; without it the app keeps saying honestly that accounts aren't connected.
+- Screens: email → 6-digit code (auto-submit, 60 s resend timer, change email) → choose username → main. Settings shows @username/email, change username, sign out, delete account (confirmations). Splash holds until the stored session is read; signing out or an expired session returns to Welcome.
+- R8 9.5.28 pinned → Kotlin 2.4 metadata warning gone. CI actions on current majors; new Backend CI job.
+
+**Tested (executed)**
+- Backend: 25/25 policy tests on PGlite (real Postgres in WASM) + a Supabase `auth` shim: own-row-only reads, no direct writes, anon blocked, look-alike/reserved names, rate limits, device takeover/limit/revocation, private schema unreachable, cascade on delete.
+- Android: 28/28 JVM tests: 11 client tests against a mock server (OTP, wrong code, concurrent refresh = 1 request, dead refresh token wipes session, offline keeps session, RPC error mapping, sign-out, deletion, 401), username rules, Phase 1 tests, 9 screenshots.
+- `assembleDebug` ✅, `assembleRelease` ✅ (2.5 MB).
+
+**Not verified**
+- Nothing has run against a real Supabase project (none exists yet): OTP email delivery, the real `auth.uid()`, PostgREST error bodies, the Edge Function (Deno not installed here).
+- Keystore session storage only runs on a device (Robolectric can't emulate AndroidKeyStore).
+- Two accounts on two physical devices (roadmap acceptance) not done.
+
+**Notes**
+- OkHttp held at 5.4.0: 5.5 requires compileSdk 37.
+- Newer R8 prints a harmless "async parsing" notice with AGP 8.13.
+
+**Next action:** you create the Supabase project; I apply the migration, deploy the function and run the end-to-end checks.
+
 ## 2026-11-01: Decision — libsignal (AGPL-3.0)
 
 The owner approved libsignal for messaging E2EE. The client apps will be AGPL-3.0-or-later. Still to do: add a `LICENSE` file when the repository is created, add a source-code link in About, check every new dependency's licence, and review App Store compatibility before Phase 7. Details are in `docs/01-architecture.md` §5. vodozemac stays documented as the fallback.

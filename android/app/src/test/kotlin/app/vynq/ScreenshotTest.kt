@@ -10,6 +10,7 @@ import androidx.compose.ui.test.onRoot
 import app.vynq.designsystem.theme.ThemeMode
 import app.vynq.designsystem.theme.VynqTheme
 import app.vynq.ui.auth.AuthScreen
+import app.vynq.ui.auth.UsernameScreen
 import app.vynq.ui.main.MainScreen
 import app.vynq.ui.settings.CallQualityScreen
 import app.vynq.ui.settings.PrivacyScreen
@@ -48,4 +49,5 @@ class ScreenshotTest {
     @Test fun settingsDark() = shot("06-settings-dark") { SettingsTab(onOpen = {}) }
     @Test fun callQualityDark() = shot("07-call-quality-dark") { CallQualityScreen(onBack = {}) }
     @Test fun privacyLight() = shot("08-privacy-light", ThemeMode.Light) { PrivacyScreen(onBack = {}) }
+    @Test fun usernameDark() = shot("09-username-dark") { UsernameScreen(onDone = {}) }
 }

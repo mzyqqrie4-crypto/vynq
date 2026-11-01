@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.dp
 import app.vynq.designsystem.component.VynqIconButton
 import app.vynq.designsystem.icon.VynqIcons
 import app.vynq.designsystem.theme.VynqSpacing
@@ -31,12 +32,13 @@ import app.vynq.designsystem.theme.VynqTheme
 @Composable
 fun DetailScreen(
     title: String,
-    onBack: () -> Unit,
+    onBack: (() -> Unit)?,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     Column(Modifier.fillMaxSize().statusBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = VynqSpacing.sm, vertical = VynqSpacing.xs)) {
-            VynqIconButton(VynqIcons.Back, "Back", onBack, size = 44)
+            if (onBack != null) VynqIconButton(VynqIcons.Back, "Back", onBack, size = 44)
+            else Spacer(Modifier.height(44.dp))
         }
         Column(
             Modifier
