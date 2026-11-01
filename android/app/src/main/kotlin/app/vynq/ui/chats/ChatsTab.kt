@@ -37,7 +37,9 @@ import app.vynq.designsystem.component.pressable
 import app.vynq.designsystem.icon.VynqIcons
 import app.vynq.designsystem.theme.VynqSpacing
 import app.vynq.designsystem.theme.VynqTheme
+import app.vynq.ui.Routes
 import app.vynq.ui.main.TabBarClearance
+import app.vynq.ui.messaging.HistoryBanner
 import app.vynq.ui.messaging.Avatar
 import app.vynq.ui.messaging.messagingSession
 import app.vynq.ui.messaging.rememberLocal
@@ -45,7 +47,7 @@ import app.vynq.ui.messaging.timeLabel
 
 /** Conversations from the encrypted local store. No sample data: empty means empty. */
 @Composable
-fun ChatsTab(onFindPeople: () -> Unit, onOpenChat: (String) -> Unit) {
+fun ChatsTab(onFindPeople: () -> Unit, onOpenChat: (String) -> Unit, onOpen: (String) -> Unit = {}) {
     val session = messagingSession()
     var query by rememberSaveable { mutableStateOf("") }
     val conversations by rememberLocal(session, emptyList()) { it.dao.conversations() }
@@ -72,6 +74,7 @@ fun ChatsTab(onFindPeople: () -> Unit, onOpenChat: (String) -> Unit) {
                 modifier = Modifier.padding(horizontal = VynqSpacing.gutter),
             )
             Spacer(Modifier.height(VynqSpacing.sm))
+            HistoryBanner(onRestore = { onOpen(Routes.RESTORE_HISTORY) }, onSaveKey = { onOpen(Routes.RECOVERY_KEY) })
         }
         items(visible, key = { it.contact.userId }) { ConversationRow(it) { onOpenChat(it.contact.userId) } }
         if (visible.isEmpty()) {

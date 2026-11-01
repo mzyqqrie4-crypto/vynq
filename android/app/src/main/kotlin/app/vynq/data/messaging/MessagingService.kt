@@ -105,6 +105,7 @@ class MessagingService(
             SqlCipherMessagingDao.open(context, deviceId)
         }
         val messenger = Messenger(api, dao, userId, FileAttachmentCache(attachmentsDir(context, deviceId)))
+        messenger.onHistoryRequest = { notifier.showHistoryRequest(it.deviceName) }
         _session.value = MessagingSession(messenger, dao, userId)
         realtime = RealtimeMailbox(api.realtimeUrl, deviceId, auth::accessToken, scope, onMail = ::syncNow)
         updateRealtime()

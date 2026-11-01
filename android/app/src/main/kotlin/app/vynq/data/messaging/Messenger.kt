@@ -81,6 +81,8 @@ class Messenger(
     val history = MutableStateFlow(HistoryState.Unknown)
     /** Other phones of this account waiting for approval to receive the history key. */
     val historyRequests = MutableStateFlow(loadHistoryRequests())
+    /** True until the user confirms they've written the recovery key down. */
+    val recoveryKeyPending = MutableStateFlow(dao.get(NS_HISTORY, "recovery_unseen") != null)
     /** Called when another of the user's phones asks for history (for a notification). */
     var onHistoryRequest: ((HistoryRequest) -> Unit)? = null
 
@@ -428,6 +430,7 @@ class Messenger(
             dao.put(NS_HISTORY, "recovery_unseen", byteArrayOf(1))
             dao.put(NS_HISTORY, "key", hk)
         }
+        recoveryKeyPending.value = true
         history.value = HistoryState.Ready
         archivePending()
     }
@@ -441,7 +444,10 @@ class Messenger(
     /** The recovery key as the user should write it down, while this phone has it. */
     fun recoveryKeyText(): String? = dao.get(NS_HISTORY, "recovery")?.let(HistoryCrypto::formatRecoveryKey)
     fun recoveryKeyUnseen(): Boolean = dao.get(NS_HISTORY, "recovery_unseen") != null
-    fun markRecoveryKeySaved() = dao.delete(NS_HISTORY, "recovery_unseen")
+    fun markRecoveryKeySaved() {
+        dao.delete(NS_HISTORY, "recovery_unseen")
+        recoveryKeyPending.value = false
+    }
 
     /** Unlocks history with the recovery key. False if the key is wrong. */
     suspend fun unlockWithRecoveryKey(input: String): Boolean {

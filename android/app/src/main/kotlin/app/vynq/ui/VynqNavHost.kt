@@ -31,6 +31,9 @@ import app.vynq.ui.auth.AuthScreen
 import app.vynq.ui.auth.UsernameScreen
 import app.vynq.ui.main.MainScreen
 import app.vynq.ui.messaging.ChatScreen
+import app.vynq.ui.messaging.HistorySettingsScreen
+import app.vynq.ui.messaging.RecoveryKeyScreen
+import app.vynq.ui.messaging.RestoreHistoryScreen
 import app.vynq.ui.messaging.VerifyScreen
 import app.vynq.ui.settings.AboutScreen
 import app.vynq.ui.settings.AppearanceScreen
@@ -52,6 +55,9 @@ object Routes {
     const val PRIVACY = "settings/privacy"
     const val ABOUT = "settings/about"
     const val NOTIFICATIONS = "settings/notifications"
+    const val HISTORY = "settings/history"
+    const val RECOVERY_KEY = "settings/recovery-key"
+    const val RESTORE_HISTORY = "history/restore"
     const val CHAT = "chat/{peer}"
     const val VERIFY = "chat/{peer}/verify"
     fun chat(peer: String) = "chat/$peer"
@@ -142,6 +148,15 @@ fun VynqNavHost(nav: NavHostController = rememberNavController(), openChat: Stat
         composable(Routes.PRIVACY) { PrivacyScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.ABOUT) { AboutScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.NOTIFICATIONS) { NotificationsScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.HISTORY) {
+            HistorySettingsScreen(
+                onBack = { nav.popBackStack() },
+                onRecoveryKey = { nav.navigate(Routes.RECOVERY_KEY) },
+                onRestore = { nav.navigate(Routes.RESTORE_HISTORY) },
+            )
+        }
+        composable(Routes.RECOVERY_KEY) { RecoveryKeyScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.RESTORE_HISTORY) { RestoreHistoryScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.CHAT) { entry ->
             val peer = entry.arguments?.getString("peer").orEmpty()
             ChatScreen(peer, onBack = { nav.popBackStack() }, onVerify = { nav.navigate(Routes.verify(peer)) })

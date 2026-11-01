@@ -104,6 +104,11 @@ fun SettingsTab(onOpen: (String) -> Unit) {
                     onClick = { onOpen(Routes.USERNAME_CHANGE) },
                 )
             }
+            if (signedIn != null) {
+                RowDivider()
+                ListRow("Message history", icon = VynqIcons.Lock, subtitle = "Encrypted, on every phone you use",
+                    onClick = { onOpen(Routes.HISTORY) })
+            }
             RowDivider()
             ListRow("Connected devices", icon = VynqIcons.Devices, enabled = false, disabledReason = "Coming soon")
             if (signedIn != null) {

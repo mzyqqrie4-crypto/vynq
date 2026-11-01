@@ -82,6 +82,21 @@ class Notifier(private val context: Context) {
 
     fun cancelConversation(peer: String) = manager.cancel(TAG_CHAT, peer.hashCode())
 
+    /** Another of the user's phones wants the message history; approval happens in the app. */
+    fun showHistoryRequest(deviceName: String) {
+        if (!canPost()) return
+        val n = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setContentTitle("New phone wants your messages")
+            .setContentText("$deviceName signed in to your account. Open vynq to approve or refuse.")
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setAutoCancel(true)
+            .setContentIntent(openApp())
+            .build()
+        try { manager.notify(TAG_HISTORY, 1, n) } catch (e: SecurityException) { }
+    }
+
     fun cancelAll() = manager.cancelAll()
 
     /** The ongoing notification a foreground service must show while it keeps the connection. */
@@ -137,5 +152,6 @@ class Notifier(private val context: Context) {
         const val EXTRA_PEER = "peer"
         const val CONNECTION_NOTIFICATION_ID = 1
         private const val TAG_CHAT = "chat"
+        private const val TAG_HISTORY = "history"
     }
 }
