@@ -2,11 +2,14 @@ package app.vynq.call
 
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import app.vynq.data.auth.BackendApi
 import app.vynq.data.messaging.CallSignal
 import app.vynq.data.messaging.MessagingService
 import com.twilio.audioswitch.AudioDevice
+import app.vynq.BuildConfig
 import io.livekit.android.LiveKit
+import io.livekit.android.util.LoggingLevel
 import io.livekit.android.RoomOptions
 import io.livekit.android.audio.AudioSwitchHandler
 import io.livekit.android.e2ee.BaseKeyProvider
@@ -79,6 +82,8 @@ class CallManager(
 
     init {
         LiveKit.init(context)
+        // Debug builds only: LiveKit warnings and errors in logcat (no media, no keys).
+        if (BuildConfig.DEBUG) LiveKit.loggingLevel = LoggingLevel.WARN
     }
 
     /** Wire signals from the messenger (call once per messaging session). */
@@ -238,12 +243,13 @@ class CallManager(
         roomJob = scope.launch { r.events.events.collect { onRoomEvent(it) } }
         try {
             r.connect(url, token)
-            r.localParticipant.setMicrophoneEnabled(true)
-            if (video) {
-                r.localParticipant.setCameraEnabled(true)
-                _state.update { it?.copy(localVideo = localVideoTrack()) }
-            }
-            if (_state.value?.outgoing == false) _state.update { it?.copy(phase = CallPhase.Connecting) }
+            val mic = r.localParticipant.setMicrophoneEnabled(true)
+            val cam = if (video) r.localParticipant.setCameraEnabled(true) else false
+            if (video) _state.update { it?.copy(localVideo = localVideoTrack()) }
+            // Diagnostics only: no ids, names or content.
+            Log.i(TAG, "joined: mic=$mic camera=$cam remotes=${r.remoteParticipants.size}")
+            // The other phone may already be in the room (we answered): we're connected.
+            if (r.remoteParticipants.isNotEmpty()) markConnected()
         } catch (e: Exception) {
             end("Couldn't connect the call.", notifyPeer = true)
         }
@@ -253,14 +259,19 @@ class CallManager(
         when (e) {
             is RoomEvent.TrackSubscribed -> {
                 val track = e.track
+                Log.i(TAG, "subscribed: ${track.kind}")
                 if (track is VideoTrack) _state.update { it?.copy(remoteVideo = track) }
                 markConnected()
             }
             is RoomEvent.ParticipantConnected -> markConnected()
             is RoomEvent.TrackUnsubscribed -> if (e.track is VideoTrack) _state.update { it?.copy(remoteVideo = null) }
             is RoomEvent.TrackE2EEStateEvent -> {
-                trackE2ee[e.track.sid.toString()] = e.state
-                val ok = trackE2ee.isNotEmpty() && trackE2ee.values.all { it == E2EEState.OK || it == E2EEState.KEY_RATCHETED }
+                Log.i(TAG, "e2ee ${e.track.kind} ${if (e.participant == room?.localParticipant) "local" else "remote"}: ${e.state}")
+                trackE2ee[(if (e.participant == room?.localParticipant) "local:" else "remote:") + e.track.sid] = e.state
+                // A remote track that decrypts with the call key proves the other phone encrypted it;
+                // any failure anywhere means we don't claim end-to-end.
+                val good = setOf(E2EEState.OK, E2EEState.KEY_RATCHETED)
+                val ok = trackE2ee.any { it.key.startsWith("remote:") && it.value in good } && trackE2ee.values.all { it in good }
                 _state.update { it?.copy(endToEnd = ok) }
             }
             is RoomEvent.Reconnecting -> _state.update { it?.copy(phase = CallPhase.Reconnecting) }
@@ -344,6 +355,7 @@ class CallManager(
 
     companion object {
         const val RING_TIMEOUT_MS = 45_000L
+        private const val TAG = "vynq.call"
         private const val PEER_GRACE_MS = 15_000L
 
         fun callIntent(context: Context, action: String? = null): Intent =
