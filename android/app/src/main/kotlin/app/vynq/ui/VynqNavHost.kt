@@ -94,11 +94,10 @@ fun VynqNavHost(nav: NavHostController = rememberNavController()) {
             UsernameScreen(onDone = { nav.navigate(Routes.MAIN) { popUpTo(0) } })
         }
         composable(Routes.MAIN) {
-            // Refreshes this device's name and last-seen, and covers an onboarding
-            // that was interrupted before a username was chosen.
+            // Covers an onboarding that was interrupted before a username was chosen.
+            // (Device registration and key upload run in MessagingService.)
             if (authState is AuthState.SignedIn) {
                 LaunchedEffect(Unit) {
-                    container.accountRepository.registerThisDevice()
                     val profile = container.accountRepository.profile().getOrNull()
                     if (profile != null && profile.username == null) nav.navigate(Routes.USERNAME) { popUpTo(0) }
                 }

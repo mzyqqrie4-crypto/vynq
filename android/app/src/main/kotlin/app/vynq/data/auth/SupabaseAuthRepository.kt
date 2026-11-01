@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
@@ -150,6 +151,27 @@ class SupabaseAuthRepository(
         }, token)
     }
 
+    // --- messaging backend ---------------------------------------------------------
+
+    override val deviceId: String get() = device.id
+
+    override val realtimeUrl: String =
+        base.replaceFirst("https://", "wss://") + "/realtime/v1/websocket?apikey=$anonKey&vsn=1.0.0"
+
+    override suspend fun rpc(function: String, args: JsonObject): JsonElement = authed { token ->
+        val body = call("POST", "/rest/v1/rpc/$function", args, token)
+        if (body.isBlank()) JsonNull else json.parseToJsonElement(body)
+    }.getOrThrow()
+
+    override suspend fun upload(path: String, bytes: ByteArray) = authed<Unit> { token ->
+        send(Request.Builder().url("$base/storage/v1/object/attachments/$path")
+            .post(bytes.toRequestBody(BLOB_TYPE)).withAuth(token).build())
+    }.getOrThrow()
+
+    override suspend fun download(path: String): ByteArray = authed { token ->
+        send(Request.Builder().url("$base/storage/v1/object/attachments/$path").get().withAuth(token).build())
+    }.getOrThrow()
+
     override suspend fun deleteAccount(): Result<Unit> = authed { token ->
         call("POST", "/functions/v1/delete-account", JsonObject(emptyMap()), token)
         forgetSession()
@@ -217,6 +239,21 @@ class SupabaseAuthRepository(
         }
     }
 
+    private fun Request.Builder.withAuth(token: String) =
+        header("apikey", anonKey).header("Authorization", "Bearer $token")
+
+    private suspend fun send(request: Request): ByteArray = withContext(io) {
+        try {
+            http.newCall(request).execute().use { response ->
+                val bytes = response.body.bytes()
+                if (!response.isSuccessful) throw errorFor(response.code, bytes.decodeToString())
+                bytes
+            }
+        } catch (e: IOException) {
+            throw AccountError.Network()
+        }
+    }
+
     private fun errorFor(status: Int, body: String): AccountError {
         val o = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
         // GoTrue: {"error_code": "...", "msg": "..."}; PostgREST/RPC: {"code": "PT409", "message": "username_taken"}
@@ -241,6 +278,7 @@ class SupabaseAuthRepository(
 
     private companion object {
         val JSON_TYPE = "application/json".toMediaType()
+        val BLOB_TYPE = "application/octet-stream".toMediaType()
         val EMPTY_BODY = ByteArray(0).toRequestBody(null)
         const val REFRESH_MARGIN_S = 60
     }

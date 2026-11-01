@@ -19,10 +19,13 @@ jobs:
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: "17"
+          # 21 runs the unit tests (desktop libsignal is Java 21 bytecode); 17, listed last, is JAVA_HOME.
+          java-version: |
+            21
+            17
       - uses: gradle/actions/setup-gradle@v6
       - name: Build, unit tests, screenshot tests
-        run: ./gradlew assembleDebug testDebugUnitTest --console=plain
+        run: ./gradlew assembleDebug testDebugUnitTest --console=plain -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64
       - uses: actions/upload-artifact@v7
         with:
           name: app-debug

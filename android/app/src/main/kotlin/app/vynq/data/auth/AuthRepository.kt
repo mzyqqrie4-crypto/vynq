@@ -3,6 +3,8 @@ package app.vynq.data.auth
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Account boundary. UI and domain code depend on these interfaces only. No backend
@@ -42,8 +44,22 @@ interface AccountRepository {
     suspend fun deleteAccount(): Result<Unit>
 }
 
-/** One backend usually provides both. */
-interface AccountService : AuthRepository, AccountRepository
+/**
+ * Signed-in calls for the messaging layer. Throws [AccountError] on failure.
+ * Arguments and results are plain JSON so no backend types leak upward.
+ */
+interface BackendApi {
+    /** This install's device id (see [DeviceIdentity]). */
+    val deviceId: String
+    /** Realtime websocket endpoint, without credentials beyond the public key. */
+    val realtimeUrl: String
+    suspend fun rpc(function: String, args: JsonObject): JsonElement
+    suspend fun upload(path: String, bytes: ByteArray)
+    suspend fun download(path: String): ByteArray
+}
+
+/** One backend usually provides all three. */
+interface AccountService : AuthRepository, AccountRepository, BackendApi
 
 /** Everything that can go wrong at the account boundary, in terms the UI can explain. */
 sealed class AccountError(message: String) : Exception(message) {
@@ -57,7 +73,7 @@ sealed class AccountError(message: String) : Exception(message) {
     class UsernameReserved : AccountError("username_reserved")
     class DeviceLimit : AccountError("device_limit")
     class DeviceUnavailable : AccountError("device_unavailable")
-    class Server(val status: Int, code: String?) : AccountError("server $status ${code.orEmpty()}")
+    class Server(val status: Int, val code: String?) : AccountError("server $status ${code.orEmpty()}")
 }
 
 /** Used when the build has no backend endpoint: says so honestly, never fakes success. */
@@ -76,6 +92,11 @@ class UnconfiguredAuthRepository : AccountService {
     override suspend fun claimUsername(username: String) = unavailable<String>()
     override suspend fun registerThisDevice() = unavailable<Unit>()
     override suspend fun deleteAccount() = unavailable<Unit>()
+    override val deviceId = ""
+    override val realtimeUrl = ""
+    override suspend fun rpc(function: String, args: JsonObject): JsonElement = throw AccountError.NotConfigured()
+    override suspend fun upload(path: String, bytes: ByteArray) = throw AccountError.NotConfigured()
+    override suspend fun download(path: String): ByteArray = throw AccountError.NotConfigured()
 }
 
 object EmailValidator {
@@ -125,5 +146,11 @@ fun Throwable.userMessage(): String = when (this) {
     is AccountError.UsernameReserved -> "That username is reserved."
     is AccountError.DeviceLimit -> "You already have 5 devices. Remove one in Settings first."
     is AccountError.DeviceUnavailable -> "This device was removed from your account. Reinstall vynq to register it again."
+    is AccountError.Server -> when (code) {
+        "user_not_found" -> "No one with that exact username is on vynq, or they've turned off being found."
+        "cannot_add_self" -> "That's your own username."
+        "not_a_contact", "request_not_found" -> "You're not connected with this person anymore."
+        else -> "Something went wrong on our side. Try again in a moment."
+    }
     else -> "Something went wrong on our side. Try again in a moment."
 }

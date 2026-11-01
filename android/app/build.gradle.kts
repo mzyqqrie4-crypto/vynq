@@ -24,8 +24,11 @@ android {
         applicationId = "app.vynq"
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.2.0-phase2"
+        versionCode = 3
+        versionName = "0.3.0-phase3"
+        // libsignal ships native code per ABI (~30 MB each); real phones are arm64,
+        // x86_64 keeps the emulator usable.
+        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         buildConfigField("String", "SUPABASE_URL", "\"${backendSetting("vynq.supabaseUrl", "VYNQ_SUPABASE_URL")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${backendSetting("vynq.supabaseAnonKey", "VYNQ_SUPABASE_ANON_KEY")}\"")
     }
@@ -46,6 +49,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true // required by libsignal
     }
     buildFeatures {
         compose = true
@@ -68,15 +72,28 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.okhttp)
     implementation(libs.kotlinx.serialization.json)
+    implementation(libs.libsignal.android)
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
+    implementation(libs.sqlcipher.android)
+    implementation(libs.androidx.sqlite)
+    implementation(libs.androidx.lifecycle.process)
     debugImplementation(libs.compose.ui.tooling)
 
     testImplementation(libs.junit)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.kotlinx.coroutines.test)
+    // Desktop build of libsignal (Windows/Linux/macOS natives) so JVM tests run the real protocol.
+    testImplementation(libs.libsignal.client)
     // JVM screenshot tests (Robolectric native graphics + Roborazzi): `gradlew recordRoborazziDebug`
     testImplementation(libs.robolectric)
     testImplementation(libs.roborazzi)
     testImplementation(libs.roborazzi.compose)
     testImplementation(libs.compose.ui.test.junit4)
     debugImplementation(libs.compose.ui.test.manifest)
+}
+
+// The desktop libsignal used by JVM unit tests is compiled for Java 21; the
+// app itself still targets Java 17.
+tasks.withType<Test>().configureEach {
+    javaLauncher.set(javaToolchains.launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) })
 }

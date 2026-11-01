@@ -13,6 +13,11 @@ datastore = "1.1.7"
 okhttp = "5.4.0" # 5.5+ needs compileSdk 37
 serialization = "1.11.0"
 coroutines = "1.11.0"
+libsignal = "0.105.0" # AGPL-3.0; see docs/01-architecture.md §5
+sqlcipher = "4.19.1"
+androidxSqlite = "2.7.0" # the version sqlcipher-android 4.19.1 is built against
+lifecycleProcess = "2.9.4"
+desugar = "2.1.5"
 junit = "4.13.2"
 robolectric = "4.16.1"
 roborazzi = "1.76.0"
@@ -29,6 +34,12 @@ androidx-datastore-preferences = { module = "androidx.datastore:datastore-prefer
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver3", version.ref = "okhttp" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
+desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugar" }
+libsignal-android = { module = "org.signal:libsignal-android", version.ref = "libsignal" }
+libsignal-client = { module = "org.signal:libsignal-client", version.ref = "libsignal" }
+sqlcipher-android = { module = "net.zetetic:sqlcipher-android", version.ref = "sqlcipher" }
+androidx-sqlite = { module = "androidx.sqlite:sqlite", version.ref = "androidxSqlite" }
+androidx-lifecycle-process = { module = "androidx.lifecycle:lifecycle-process", version.ref = "lifecycleProcess" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 compose-bom ={ module = "androidx.compose:compose-bom", version.ref = "composeBom" }
 compose-ui = { module = "androidx.compose.ui:ui" }
