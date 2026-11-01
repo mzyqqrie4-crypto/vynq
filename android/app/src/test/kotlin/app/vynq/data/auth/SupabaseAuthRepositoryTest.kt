@@ -140,13 +140,18 @@ class SupabaseAuthRepositoryTest {
         assertTrue(body.contains("\"p_platform\":\"android\""))
     }
 
-    @Test fun `sign out revokes on the server and clears locally even if the server fails`() = runTest {
+    @Test fun `sign out retires the device and revokes on the server, and clears locally even if the server fails`() = runTest {
         store.session = Session("access-1", "refresh-1", now + 3600, "user-1", "alice@example.test")
-        server.enqueue(json(500, "{}"))
+        server.enqueue(json(500, "{}"))   // revoke_device fails
+        server.enqueue(json(500, "{}"))   // logout fails
         val repo = repo(StandardTestDispatcher(testScheduler))
         repo.restore()
+        val oldDevice = device.id
 
         repo.signOut()
+        val revoke = server.takeRequest()
+        assertEquals("/rest/v1/rpc/revoke_device", revoke.url.encodedPath)
+        assertTrue(revoke.body!!.utf8().contains(oldDevice))
         val req = server.takeRequest()
         assertEquals("/auth/v1/logout", req.url.encodedPath)
         assertEquals("Bearer access-1", req.headers["Authorization"])
@@ -157,6 +162,7 @@ class SupabaseAuthRepositoryTest {
     @Test fun `after sign-out the next account registers as a new device`() = runTest {
         store.session = Session("access-1", "refresh-1", now + 3600, "user-1", "alice@example.test")
         server.enqueue(json(200, ""))   // register as alice
+        server.enqueue(json(204, ""))   // revoke_device
         server.enqueue(json(204, ""))   // logout
         server.enqueue(json(200, tokenBody(access = "access-b").replace("user-1", "user-2")))
         server.enqueue(json(200, ""))   // register as bob
@@ -169,9 +175,10 @@ class SupabaseAuthRepositoryTest {
         repo.verifyEmailCode("bob@example.test", "123456")
         repo.registerThisDevice()
 
-        val bodies = List(4) { server.takeRequest().body?.utf8().orEmpty() }
+        val bodies = List(5) { server.takeRequest().body?.utf8().orEmpty() }
         assertTrue(bodies[0].contains(firstId))
-        assertTrue(bodies[3].contains(device.id))
+        assertTrue(bodies[1].contains(firstId))      // the old device is retired on sign-out
+        assertTrue(bodies[4].contains(device.id))
         assertTrue(firstId != device.id)
     }
 

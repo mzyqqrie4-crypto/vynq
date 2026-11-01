@@ -77,9 +77,17 @@ class SupabaseAuthRepository(
     }
 
     override suspend fun signOut() {
-        // Revoke server-side first so a copied refresh token is useless; never
-        // block sign-out on the network.
-        runCatching { call("POST", "/auth/v1/logout?scope=local", null, token = accessToken()) }
+        // Never block sign-out on the network, but try, in this order:
+        // 1. Retire this device: its keys are about to be wiped, so contacts must
+        //    stop encrypting to it (the server also drops its undelivered mail).
+        // 2. Revoke the refresh token so a copied one is useless.
+        runCatching {
+            val token = accessToken()
+            runCatching {
+                call("POST", "/rest/v1/rpc/revoke_device", buildJsonObject { put("p_device_id", device.id) }, token)
+            }
+            call("POST", "/auth/v1/logout?scope=local", null, token = token)
+        }
         forgetSession()
     }
 
