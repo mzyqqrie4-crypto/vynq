@@ -28,12 +28,11 @@ verify_jwt = true
 
 # The app signs in with the 6-digit code, so both templates must show it
 # (first sign-in uses "confirmation", returning users get "magic_link").
-# Supabase refuses template changes on the free plan's built-in sender, so
-# these stay commented out until a custom SMTP provider is configured.
-# [auth.email.template.confirmation]
-# subject = "Your vynq code"
-# content_path = "./supabase/templates/otp.html"
-#
-# [auth.email.template.magic_link]
-# subject = "Your vynq code"
-# content_path = "./supabase/templates/otp.html"
+# Requires custom SMTP (set in the dashboard; credentials never live here).
+[auth.email.template.confirmation]
+subject = "Your vynq code"
+content_path = "./supabase/templates/otp.html"
+
+[auth.email.template.magic_link]
+subject = "Your vynq code"
+content_path = "./supabase/templates/otp.html"
