@@ -4,6 +4,7 @@ import app.vynq.data.auth.AccountError
 import app.vynq.data.auth.BackendApi
 import app.vynq.data.crypto.AttachmentCrypto
 import app.vynq.data.crypto.Envelope
+import app.vynq.data.crypto.HistoryCrypto
 import app.vynq.data.crypto.KeyUpload
 import app.vynq.data.crypto.MessageCrypto
 import app.vynq.data.crypto.OneTimeKey
@@ -14,6 +15,7 @@ import java.util.Base64
 import java.util.UUID
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -75,14 +77,29 @@ class Messenger(
     private val unb64 = Base64.getDecoder()
     private val deviceId get() = api.deviceId
 
+    /** Whether this phone can read and extend the account's encrypted history. */
+    val history = MutableStateFlow(HistoryState.Unknown)
+    /** Other phones of this account waiting for approval to receive the history key. */
+    val historyRequests = MutableStateFlow(loadHistoryRequests())
+    /** Called when another of the user's phones asks for history (for a notification). */
+    var onHistoryRequest: ((HistoryRequest) -> Unit)? = null
+
     // --- keys ------------------------------------------------------------------------------
 
-    /** Creates and publishes this device's keys on first run; tops up one-time keys later. */
-    suspend fun start() = locked {
+    /**
+     * Creates and publishes this device's keys on first run (tops up one-time
+     * keys later), then sets up or resumes the account's encrypted history.
+     */
+    suspend fun start() {
+        locked { startKeys() }
+        runCatching { setUpHistory() }
+    }
+
+    private suspend fun startKeys() {
         if (!crypto.hasIdentity) {
             publish(crypto.createKeys(ONE_TIME_BATCH))
             dao.put(SignalStore.NS_LOCAL, PUBLISHED, byteArrayOf(1))
-            return@locked
+            return
         }
         val status = api.rpc("prekey_status", buildJsonObject { put("p_device", deviceId) }).firstRow()
         val serverHasKeys = status?.get("has_identity")?.jsonPrimitive?.contentOrNull == "true" &&
@@ -213,6 +230,7 @@ class Messenger(
         val message = Message(UUID.randomUUID().toString(), peer, true, MessageKind.Text, text.trim(), null, now(), MessageStatus.Sending)
         withContext(io) { dao.insertMessage(message) }
         deliver(message)
+        runCatching { archivePending() }
         return dao.message(message.id) ?: message
     }
 
@@ -230,6 +248,7 @@ class Messenger(
         withContext(io) { dao.insertMessage(message) }
         val uploaded = runCatching { api.upload(pointer.path, sealed.blob) }.isSuccess
         if (uploaded) deliver(message) else withContext(io) { dao.updateStatus(id, MessageStatus.Failed) }
+        runCatching { archivePending() }
         return dao.message(id) ?: message
     }
 
@@ -308,7 +327,9 @@ class Messenger(
      * Fetches, decrypts and stores everything waiting for this device, then
      * acknowledges it. Returns the new incoming messages (for notifications).
      */
-    suspend fun sync(): List<Message> = locked {
+    suspend fun sync(): List<Message> = syncInbox().also { runCatching { archivePending() } }
+
+    private suspend fun syncInbox(): List<Message> = locked {
         val received = mutableListOf<Message>()
         repeat(MAX_PAGES) {
             val rows = api.rpc("fetch_messages", buildJsonObject { put("p_device", deviceId); put("p_limit", PAGE) })
@@ -358,6 +379,10 @@ class Messenger(
         val payload = runCatching { json.decodeFromString(WirePayload.serializer(), plain.decodeToString()) }.getOrNull()
             ?: return null
         if (payload.from != sender) return null
+        if (payload.control != null) {
+            if (self) handleControl(fromDevice, payload)
+            return null
+        }
 
         val kind = if (payload.attachment != null) MessageKind.Photo else MessageKind.Text
         val message = when {
@@ -369,6 +394,200 @@ class Messenger(
         }
         return message.takeIf { withContext(io) { dao.insertMessage(message) } }
     }
+
+    // --- encrypted history across phones ---------------------------------------------------------
+
+    private fun historyKey(): ByteArray? = dao.get(NS_HISTORY, "key")
+
+    /** First phone of the account: create the history and recovery keys. Later: resume, or wait for unlock. */
+    private suspend fun setUpHistory() {
+        val local = historyKey()
+        val vault = api.rpc("get_history_vault", JsonObject(emptyMap())).firstRow()
+        if (local != null) {
+            if (vault == null) {
+                // Created here but the upload never finished: wrap again with the stored recovery key.
+                dao.get(NS_HISTORY, "recovery")?.let { rk -> uploadVault(HistoryCrypto.wrap(local, rk), replace = false) }
+            }
+            history.value = HistoryState.Ready
+            restoreHistory()
+            archivePending()
+            return
+        }
+        if (vault != null) { history.value = HistoryState.Locked; return }
+
+        val hk = HistoryCrypto.newHistoryKey()
+        val rk = HistoryCrypto.newRecoveryKey()
+        try {
+            uploadVault(HistoryCrypto.wrap(hk, rk), replace = false)
+        } catch (e: AccountError.Server) {
+            if (e.code == "vault_exists") { history.value = HistoryState.Locked; return } // another phone was first
+            throw e
+        }
+        withContext(io) {
+            dao.put(NS_HISTORY, "recovery", rk)
+            dao.put(NS_HISTORY, "recovery_unseen", byteArrayOf(1))
+            dao.put(NS_HISTORY, "key", hk)
+        }
+        history.value = HistoryState.Ready
+        archivePending()
+    }
+
+    private suspend fun uploadVault(wrapped: ByteArray, replace: Boolean) {
+        api.rpc("set_history_vault", buildJsonObject {
+            put("p_wrapped_key", b64.encodeToString(wrapped)); put("p_replace", replace)
+        })
+    }
+
+    /** The recovery key as the user should write it down, while this phone has it. */
+    fun recoveryKeyText(): String? = dao.get(NS_HISTORY, "recovery")?.let(HistoryCrypto::formatRecoveryKey)
+    fun recoveryKeyUnseen(): Boolean = dao.get(NS_HISTORY, "recovery_unseen") != null
+    fun markRecoveryKeySaved() = dao.delete(NS_HISTORY, "recovery_unseen")
+
+    /** Unlocks history with the recovery key. False if the key is wrong. */
+    suspend fun unlockWithRecoveryKey(input: String): Boolean {
+        val rk = HistoryCrypto.parseRecoveryKey(input) ?: return false
+        val wrapped = api.rpc("get_history_vault", JsonObject(emptyMap())).firstRow()?.str("wrapped_key") ?: return false
+        val hk = try {
+            HistoryCrypto.unwrap(unb64.decode(wrapped), rk)
+        } catch (e: HistoryCrypto.WrongKeyException) {
+            return false
+        }
+        adoptHistoryKey(hk, rk)
+        return true
+    }
+
+    /** Asks the account's other phones for the history key. Returns how many were asked (0: none left). */
+    suspend fun requestHistory(): Int = locked {
+        val mine = syncDevices(userId)
+        val payload = WirePayload(id = UUID.randomUUID().toString(), from = userId, sentAt = now(),
+            control = CONTROL_HISTORY_REQUEST, deviceName = api.deviceName)
+        sendControl(mine, payload)
+    }
+
+    /** Gives a waiting phone of this account the history key (end-to-end encrypted to that phone). */
+    suspend fun approveHistoryRequest(deviceId: String) {
+        val hk = historyKey() ?: return
+        locked {
+            val target = syncDevices(userId).filter { it.deviceId == deviceId }
+            val payload = WirePayload(id = UUID.randomUUID().toString(), from = userId, sentAt = now(),
+                control = CONTROL_HISTORY_KEY, historyKey = b64.encodeToString(hk),
+                recoveryKey = dao.get(NS_HISTORY, "recovery")?.let(b64::encodeToString))
+            if (sendControl(target, payload) == 0) throw IllegalStateException("that phone is no longer signed in")
+        }
+        dismissHistoryRequest(deviceId)
+    }
+
+    fun dismissHistoryRequest(deviceId: String) {
+        dao.delete(NS_HISTORY_REQ, deviceId)
+        historyRequests.value = loadHistoryRequests()
+    }
+
+    /** Runs inside sync's lock: only records what arrived; [applyPendingKey] acts on it afterwards. */
+    private suspend fun handleControl(fromDevice: String, p: WirePayload) {
+        when (p.control) {
+            CONTROL_HISTORY_REQUEST -> if (historyKey() != null) {
+                val req = HistoryRequest(fromDevice, p.deviceName?.take(40) ?: "A new phone", p.sentAt)
+                withContext(io) { dao.put(NS_HISTORY_REQ, fromDevice, "${req.at}|${req.deviceName}".encodeToByteArray()) }
+                historyRequests.value = loadHistoryRequests()
+                onHistoryRequest?.invoke(req)
+            }
+            CONTROL_HISTORY_KEY -> if (historyKey() == null) {
+                val hk = p.historyKey?.let(unb64::decode)?.takeIf { it.size == 32 } ?: return
+                pendingKey = hk to p.recoveryKey?.let(unb64::decode)
+            }
+        }
+    }
+
+    @Volatile private var pendingKey: Pair<ByteArray, ByteArray?>? = null
+
+    /** Applies a history key another phone sent, after checking it opens this account's vault. */
+    private suspend fun applyPendingKey() {
+        val (hk, rk) = pendingKey ?: return
+        pendingKey = null
+        val wrapped = api.rpc("get_history_vault", JsonObject(emptyMap())).firstRow()?.str("wrapped_key")
+        if (rk != null && wrapped != null) {
+            val matches = runCatching { HistoryCrypto.unwrap(unb64.decode(wrapped), rk).contentEquals(hk) }.getOrDefault(false)
+            if (!matches) return
+        }
+        adoptHistoryKey(hk, rk)
+    }
+
+    private suspend fun adoptHistoryKey(hk: ByteArray, rk: ByteArray?) {
+        withContext(io) {
+            dao.put(NS_HISTORY, "key", hk)
+            if (rk != null) dao.put(NS_HISTORY, "recovery", rk)
+        }
+        history.value = HistoryState.Ready
+        restoreHistory()
+        archivePending()
+    }
+
+    /** Downloads history records added since last time (by any of the account's phones). */
+    private suspend fun restoreHistory() {
+        val hk = historyKey() ?: return
+        var cursor = dao.get(NS_HISTORY, "cursor")?.decodeToString()?.toLong() ?: 0L
+        while (true) {
+            val rows = api.rpc("fetch_history", buildJsonObject { put("p_after", cursor); put("p_limit", HISTORY_PAGE) })
+                .jsonArray.map { it.jsonObject }
+            if (rows.isEmpty()) break
+            withContext(io) {
+                for (r in rows) {
+                    val id = r.str("record_id") ?: continue
+                    val record = runCatching {
+                        json.decodeFromString(HistoryRecord.serializer(),
+                            HistoryCrypto.openRecord(hk, id, unb64.decode(r.str("blob")!!)).decodeToString())
+                    }.getOrNull() ?: continue // damaged or not readable with this key: skip it
+                    if (record.id != id) continue
+                    dao.insertMessage(Message(record.id, record.peer, record.outgoing, record.kind, record.text,
+                        record.attachment, record.sentAt, if (record.outgoing) MessageStatus.Sent else MessageStatus.Received,
+                        read = true, archived = true))
+                }
+                cursor = rows.last()["seq"]!!.jsonPrimitive.long
+                dao.put(NS_HISTORY, "cursor", cursor.toString().encodeToByteArray())
+            }
+            if (rows.size < HISTORY_PAGE) break
+        }
+    }
+
+    /** Uploads messages that aren't in the encrypted history yet. */
+    private suspend fun archivePending() {
+        applyPendingKey()
+        val hk = historyKey() ?: return
+        while (true) {
+            val batch = withContext(io) { dao.unarchived(100) }
+                .filter { it.status != MessageStatus.Sending && it.status != MessageStatus.Failed }
+            if (batch.isEmpty()) return
+            api.rpc("append_history", buildJsonObject {
+                put("p_records", buildJsonArray {
+                    batch.forEach { m ->
+                        val record = HistoryRecord(id = m.id, peer = m.peer, outgoing = m.outgoing, kind = m.kind,
+                            text = m.text, attachment = m.attachment, sentAt = m.sentAt)
+                        val blob = HistoryCrypto.sealRecord(hk, m.id, json.encodeToString(HistoryRecord.serializer(), record).encodeToByteArray())
+                        addJsonObject { put("id", m.id); put("blob", b64.encodeToString(blob)) }
+                    }
+                })
+            })
+            withContext(io) { dao.markArchived(batch.map { it.id }) }
+            if (batch.size < 100) return
+        }
+    }
+
+    private suspend fun sendControl(devices: List<RemoteDevice>, payload: WirePayload): Int {
+        val out = devices.mapNotNull { encryptFor(it, payload) }
+        if (out.isEmpty()) return 0
+        api.rpc("send_messages", buildJsonObject {
+            put("p_from_device", deviceId)
+            put("p_messages", buildJsonArray {
+                out.forEach { (to, e) -> addJsonObject { put("to", to); put("type", e.type); put("body", b64.encodeToString(e.body)) } }
+            })
+        })
+        return out.size
+    }
+
+    private fun loadHistoryRequests(): List<HistoryRequest> = dao.keys(NS_HISTORY_REQ).mapNotNull { id ->
+        dao.get(NS_HISTORY_REQ, id)?.decodeToString()?.split('|', limit = 2)?.takeIf { it.size == 2 }
+            ?.let { HistoryRequest(id, it[1], it[0].toLongOrNull() ?: 0) }
+    }.sortedBy { it.at }
 
     // --- attachments ----------------------------------------------------------------------------
 
@@ -400,6 +619,11 @@ class Messenger(
 
     companion object {
         private const val PUBLISHED = "published"
+        private const val NS_HISTORY = "history"
+        private const val NS_HISTORY_REQ = "history_req"
+        private const val HISTORY_PAGE = 200
+        const val CONTROL_HISTORY_REQUEST = "history_request"
+        const val CONTROL_HISTORY_KEY = "history_key"
         private const val ONE_TIME_BATCH = 100
         private const val ONE_TIME_LOW = 20
         private const val PAGE = 100

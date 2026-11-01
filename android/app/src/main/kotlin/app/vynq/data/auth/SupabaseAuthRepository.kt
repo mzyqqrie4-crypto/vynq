@@ -160,6 +160,7 @@ class SupabaseAuthRepository(
     // --- messaging backend ---------------------------------------------------------
 
     override val deviceId: String get() = device.id
+    override val deviceName: String get() = device.name
 
     override val realtimeUrl: String =
         base.replaceFirst("https://", "wss://") + "/realtime/v1/websocket?apikey=$anonKey&vsn=1.0.0"

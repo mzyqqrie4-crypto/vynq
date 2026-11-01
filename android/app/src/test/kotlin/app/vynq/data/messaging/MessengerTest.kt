@@ -2,6 +2,7 @@ package app.vynq.data.messaging
 
 import app.vynq.data.auth.AccountError
 import app.vynq.data.auth.BackendApi
+import app.vynq.data.crypto.HistoryCrypto
 import java.util.Base64
 import java.util.UUID
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -40,6 +41,8 @@ class MessengerTest {
         val devices = mutableMapOf<String, Dev>()
         val mailbox = mutableListOf<Mail>()
         val blobs = mutableMapOf<String, ByteArray>()
+        val vaults = mutableMapOf<String, String>()                    // user -> wrapped key (b64)
+        val history = mutableListOf<Triple<Long, String, Pair<String, String>>>() // seq, user, (record id, blob b64)
         var nextId = 1L
         /** Set to swap a device's identity key in everything the server hands out. */
         var forgedIdentity: Pair<String, String>? = null
@@ -122,6 +125,30 @@ class MessengerTest {
                 val ids = a["p_ids"]!!.jsonArray.map { it.jsonPrimitive.long }.toSet()
                 mailbox.removeAll { it.to == device && it.id in ids }; JsonNull
             }
+            "get_history_vault" -> JsonArray(listOfNotNull(vaults[user]?.let { w -> buildJsonObject { put("wrapped_key", w) } }))
+            "set_history_vault" -> {
+                val replace = (a["p_replace"] as? JsonPrimitive)?.contentOrNull == "true"
+                if (!replace && user in vaults) throw AccountError.Server(409, "vault_exists")
+                vaults[user] = a.s("p_wrapped_key")!!; JsonNull
+            }
+            "append_history" -> {
+                if (user !in vaults) throw AccountError.Server(409, "vault_missing")
+                var n = 0
+                a["p_records"]!!.jsonArray.forEach { r ->
+                    val id = r.jsonObject.s("id")!!
+                    if (history.none { it.second == user && it.third.first == id }) {
+                        history += Triple(nextId++, user, id to r.jsonObject.s("blob")!!); n++
+                    }
+                }
+                JsonPrimitive(n)
+            }
+            "fetch_history" -> {
+                val after = a["p_after"]!!.jsonPrimitive.long
+                val limit = a["p_limit"]!!.jsonPrimitive.int
+                JsonArray(history.filter { it.second == user && it.first > after }.take(limit).map { (seq, _, r) ->
+                    buildJsonObject { put("seq", seq); put("record_id", r.first); put("blob", r.second) }
+                })
+            }
             else -> error("unknown rpc $fn")
         }
 
@@ -135,6 +162,7 @@ class MessengerTest {
         val api = object : BackendApi {
             override val deviceId = this@Phone.deviceId
             override val realtimeUrl = ""
+            override val deviceName = "Phone ${deviceId.take(4)}"
             override suspend fun rpc(function: String, args: JsonObject) = server.handle(user, deviceId, function, args)
             override suspend fun upload(path: String, bytes: ByteArray) { server.blobs[path] = bytes }
             override suspend fun download(path: String) = server.blobs.getValue(path)
@@ -282,5 +310,106 @@ class MessengerTest {
         repeat(90) { dev.oneTime.removeFirst() }
         b.messenger.start()
         assertEquals(110, dev.oneTime.size)
+    }
+
+    // --- history across phones ---------------------------------------------------------------
+
+    private suspend fun chat(a: Phone, b: Phone) {
+        a.messenger.start(); b.messenger.start()
+        connect(a, b, "bob")
+        a.messenger.sendText(bob, "first from alice")
+        b.messenger.sync()
+        b.messenger.sendText(alice, "reply from bob")
+        a.messenger.sync()
+    }
+
+    @Test fun `the first phone sets up history and backs every message up encrypted`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        chat(a, b)
+        assertEquals(HistoryState.Ready, a.messenger.history.value)
+        assertTrue(a.messenger.recoveryKeyUnseen())
+        assertEquals(10, a.messenger.recoveryKeyText()!!.split(" ").size)
+        val mine = server.history.filter { it.second == alice }
+        assertEquals(2, mine.size)
+        mine.forEach { (_, _, r) ->
+            val bytes = Base64.getDecoder().decode(r.second)
+            assertFalse(String(bytes, Charsets.ISO_8859_1).contains("alice"))
+            assertFalse(String(bytes, Charsets.ISO_8859_1).contains("bob"))
+        }
+    }
+
+    @Test fun `a new phone with the recovery key gets the whole history`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        chat(a, b)
+        val recovery = a.messenger.recoveryKeyText()!!
+
+        val newPhone = Phone(server, alice, this)        // old phone lost
+        server.devices.remove(a.deviceId)
+        newPhone.messenger.start()
+        assertEquals(HistoryState.Locked, newPhone.messenger.history.value)
+        newPhone.messenger.refreshContacts()
+        assertFalse(newPhone.messenger.unlockWithRecoveryKey(HistoryCrypto.formatRecoveryKey(HistoryCrypto.newRecoveryKey())))
+        assertFalse(newPhone.messenger.unlockWithRecoveryKey("not a key"))
+        assertTrue(newPhone.messenger.unlockWithRecoveryKey(recovery.lowercase()))
+        assertEquals(HistoryState.Ready, newPhone.messenger.history.value)
+        assertEquals(listOf("first from alice", "reply from bob"), newPhone.dao.messages(bob).map { it.text })
+        assertTrue(newPhone.dao.messages(bob).all { it.read })
+
+        // It keeps backing up: a new message from it shows up for the next phone too.
+        newPhone.messenger.sendText(bob, "from the new phone")
+        val third = Phone(server, alice, this)
+        third.messenger.start()
+        third.messenger.unlockWithRecoveryKey(recovery)
+        assertEquals(3, third.dao.messages(bob).size)
+    }
+
+    @Test fun `a new phone gets history after the old phone approves`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        chat(a, b)
+
+        val newPhone = Phone(server, alice, this)
+        newPhone.messenger.start()
+        assertEquals(HistoryState.Locked, newPhone.messenger.history.value)
+        assertEquals(1, newPhone.messenger.requestHistory())
+
+        a.messenger.sync()                                  // the old phone sees the request
+        val request = a.messenger.historyRequests.value.single()
+        assertEquals(newPhone.deviceId, request.deviceId)
+        a.messenger.approveHistoryRequest(request.deviceId)
+        assertTrue(a.messenger.historyRequests.value.isEmpty())
+
+        newPhone.messenger.sync()                           // receives the key, restores
+        assertEquals(HistoryState.Ready, newPhone.messenger.history.value)
+        assertEquals(listOf("first from alice", "reply from bob"), newPhone.dao.messages(bob).map { it.text })
+        assertEquals(a.messenger.recoveryKeyText(), newPhone.messenger.recoveryKeyText())
+    }
+
+    @Test fun `nothing is handed over without approval, and other accounts can't ask`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        chat(a, b)
+        val newPhone = Phone(server, alice, this)
+        newPhone.messenger.start()
+        newPhone.messenger.requestHistory()
+        a.messenger.sync()
+        a.messenger.dismissHistoryRequest(a.messenger.historyRequests.value.single().deviceId)
+        newPhone.messenger.sync()
+        assertEquals(HistoryState.Locked, newPhone.messenger.history.value)
+        assertTrue(newPhone.dao.messages(bob).isEmpty())
+        // Bob's phone has its own history; it never sees Alice's requests.
+        assertTrue(b.messenger.historyRequests.value.isEmpty())
+    }
+
+    @Test fun `messages that arrive while a phone is locked are backed up after it unlocks`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        chat(a, b)
+        val recovery = a.messenger.recoveryKeyText()!!
+        server.devices.remove(a.deviceId)
+        val newPhone = Phone(server, alice, this)
+        newPhone.messenger.start(); newPhone.messenger.refreshContacts()
+        b.messenger.sendText(alice, "while you were locked")
+        newPhone.messenger.sync()
+        newPhone.messenger.unlockWithRecoveryKey(recovery)
+        assertEquals(3, newPhone.dao.messages(bob).size)
+        assertEquals(3, server.history.count { it.second == alice })
     }
 }

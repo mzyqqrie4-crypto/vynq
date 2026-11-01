@@ -26,6 +26,8 @@ data class Message(
     val sentAt: Long,
     val status: MessageStatus,
     val read: Boolean = outgoing,
+    /** Uploaded to the account's encrypted history. */
+    val archived: Boolean = false,
 )
 
 /** Where an encrypted attachment lives and how to open it. Travels only inside Signal messages. */
@@ -63,4 +65,34 @@ data class WirePayload(
     val attachment: AttachmentPointer? = null,
     /** Set on copies sent to our own other devices: who the message was sent to. */
     val syncPeer: String? = null,
+    /** Device-to-device messages within one account (history hand-over); never shown. */
+    val control: String? = null,
+    val historyKey: String? = null,
+    val recoveryKey: String? = null,
+    val deviceName: String? = null,
 )
+
+/** One message in the account's encrypted history (see HistoryCrypto). */
+@Serializable
+data class HistoryRecord(
+    val v: Int = 1,
+    val id: String,
+    val peer: String,
+    val outgoing: Boolean,
+    val kind: MessageKind,
+    val text: String? = null,
+    val attachment: AttachmentPointer? = null,
+    val sentAt: Long,
+)
+
+enum class HistoryState {
+    /** Not checked yet (offline, or still starting). */
+    Unknown,
+    /** This phone has the history key: messages are backed up and restored. */
+    Ready,
+    /** The account has history this phone can't read yet: approve on another phone or enter the recovery key. */
+    Locked,
+}
+
+/** Another of the user's phones asking for the history key. */
+data class HistoryRequest(val deviceId: String, val deviceName: String, val at: Long)

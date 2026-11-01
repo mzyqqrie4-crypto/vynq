@@ -83,10 +83,10 @@ class SqlCipherMessagingDao private constructor(private val db: SQLiteDatabase) 
         if (exists) return false
         tx {
             db.execSQL(
-                "insert into messages (id, peer, outgoing, kind, body, attachment, sent_at, status, read) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "insert into messages (id, peer, outgoing, kind, body, attachment, sent_at, status, read, archived) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 arrayOf<Any?>(message.id, message.peer, message.outgoing.int, message.kind.name, message.text,
                     message.attachment?.let { json.encodeToString(AttachmentPointer.serializer(), it) },
-                    message.sentAt, message.status.name, message.read.int),
+                    message.sentAt, message.status.name, message.read.int, message.archived.int),
             )
         }
         return true
@@ -97,6 +97,18 @@ class SqlCipherMessagingDao private constructor(private val db: SQLiteDatabase) 
     }
     override fun markRead(peer: String) = tx {
         db.execSQL("update messages set read = 1 where peer = ? and read = 0", arrayOf<Any>(peer))
+    }
+
+    override fun unarchived(limit: Int) = db.rawQuery(
+        "select * from messages where archived = 0 and kind != 'System' order by sent_at, rowid limit $limit", emptyArray<String>(),
+    ).use { c -> c.map { message() } }
+
+    override fun markArchived(ids: Collection<String>) {
+        db.beginTransaction()
+        try {
+            ids.forEach { db.execSQL("update messages set archived = 1 where id = ?", arrayOf<Any>(it)) }
+            db.setTransactionSuccessful()
+        } finally { db.endTransaction() }
     }
 
     override fun conversations(): List<Conversation> {
@@ -114,6 +126,7 @@ class SqlCipherMessagingDao private constructor(private val db: SQLiteDatabase) 
         kind = MessageKind.valueOf(str("kind")!!), text = str("body"),
         attachment = str("attachment")?.let { json.decodeFromString(AttachmentPointer.serializer(), it) },
         sentAt = long("sent_at"), status = MessageStatus.valueOf(str("status")!!), read = long("read") == 1L,
+        archived = long("archived") == 1L,
     )
 
     // --- plumbing -------------------------------------------------------------------------------
@@ -130,7 +143,7 @@ class SqlCipherMessagingDao private constructor(private val db: SQLiteDatabase) 
     private inline fun <T> Cursor.map(f: Cursor.() -> T): List<T> = buildList { while (moveToNext()) add(f()) }
 
     companion object {
-        private const val SCHEMA_VERSION = 1
+        private const val SCHEMA_VERSION = 2
         private const val PREFIX = "messages-"
 
         init { System.loadLibrary("sqlcipher") }
@@ -145,7 +158,8 @@ class SqlCipherMessagingDao private constructor(private val db: SQLiteDatabase) 
             if (db.version < SCHEMA_VERSION) {
                 db.beginTransaction()
                 try {
-                    SCHEMA.forEach(db::execSQL)
+                    if (db.version < 1) SCHEMA.forEach(db::execSQL)
+                    if (db.version < 2) db.execSQL("alter table messages add column archived integer not null default 0")
                     db.version = SCHEMA_VERSION
                     db.setTransactionSuccessful()
                 } finally { db.endTransaction() }

@@ -56,6 +56,8 @@ interface AccountRepository {
 interface BackendApi {
     /** This install's device id (see [DeviceIdentity]). */
     val deviceId: String
+    /** What the user calls this phone ("Xiaomi 17 Pro"), for prompts on their other phones. */
+    val deviceName: String
     /** Realtime websocket endpoint, without credentials beyond the public key. */
     val realtimeUrl: String
     suspend fun rpc(function: String, args: JsonObject): JsonElement
@@ -98,6 +100,7 @@ class UnconfiguredAuthRepository : AccountService {
     override suspend fun registerThisDevice() = unavailable<Unit>()
     override suspend fun deleteAccount() = unavailable<Unit>()
     override val deviceId = ""
+    override val deviceName = ""
     override val realtimeUrl = ""
     override suspend fun rpc(function: String, args: JsonObject): JsonElement = throw AccountError.NotConfigured()
     override suspend fun upload(path: String, bytes: ByteArray) = throw AccountError.NotConfigured()

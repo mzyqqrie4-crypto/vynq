@@ -33,6 +33,10 @@ interface MessagingDao : CryptoStorage {
     fun updateStatus(id: String, status: MessageStatus)
     fun markRead(peer: String)
     fun conversations(): List<Conversation>
+
+    /** Text and photo messages not yet in the account's encrypted history, oldest first. */
+    fun unarchived(limit: Int): List<Message>
+    fun markArchived(ids: Collection<String>)
 }
 
 class MemoryMessagingDao : MessagingDao, CryptoStorage by MemoryCryptoStorage() {
@@ -72,6 +76,11 @@ class MemoryMessagingDao : MessagingDao, CryptoStorage by MemoryCryptoStorage() 
     }
     override fun markRead(peer: String) {
         messages.replaceAll { _, m -> if (m.peer == peer) m.copy(read = true) else m }; bump()
+    }
+    override fun unarchived(limit: Int) = messages.values.filter { !it.archived && it.kind != MessageKind.System }
+        .sortedWith(compareBy<Message> { it.sentAt }.thenBy { order[it.id] }).take(limit)
+    override fun markArchived(ids: Collection<String>) {
+        ids.forEach { id -> messages.computeIfPresent(id) { _, m -> m.copy(archived = true) } }
     }
     override fun conversations() = contacts.values.mapNotNull { c ->
         val list = messages(c.userId)
