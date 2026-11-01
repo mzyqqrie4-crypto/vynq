@@ -25,6 +25,8 @@ import app.vynq.designsystem.theme.VynqTheme
 import app.vynq.ui.auth.AuthScreen
 import app.vynq.ui.auth.UsernameScreen
 import app.vynq.ui.main.MainScreen
+import app.vynq.ui.messaging.ChatScreen
+import app.vynq.ui.messaging.VerifyScreen
 import app.vynq.ui.settings.AboutScreen
 import app.vynq.ui.settings.AppearanceScreen
 import app.vynq.ui.settings.CallQualityScreen
@@ -43,6 +45,10 @@ object Routes {
     const val NETWORK = "settings/network"
     const val PRIVACY = "settings/privacy"
     const val ABOUT = "settings/about"
+    const val CHAT = "chat/{peer}"
+    const val VERIFY = "chat/{peer}/verify"
+    fun chat(peer: String) = "chat/$peer"
+    fun verify(peer: String) = "chat/$peer/verify"
 }
 
 @Composable
@@ -112,5 +118,12 @@ fun VynqNavHost(nav: NavHostController = rememberNavController()) {
         composable(Routes.NETWORK) { NetworkDiagnosticsScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.PRIVACY) { PrivacyScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.ABOUT) { AboutScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.CHAT) { entry ->
+            val peer = entry.arguments?.getString("peer").orEmpty()
+            ChatScreen(peer, onBack = { nav.popBackStack() }, onVerify = { nav.navigate(Routes.verify(peer)) })
+        }
+        composable(Routes.VERIFY) { entry ->
+            VerifyScreen(entry.arguments?.getString("peer").orEmpty(), onBack = { nav.popBackStack() })
+        }
     }
 }

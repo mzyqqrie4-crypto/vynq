@@ -19,6 +19,7 @@ fun backendSetting(key: String, env: String): String =
 android {
     namespace = "app.vynq"
     compileSdk = 36
+    ndkVersion = "29.0.14206865" // only used to strip debug symbols from native libraries
 
     defaultConfig {
         applicationId = "app.vynq"
@@ -26,9 +27,9 @@ android {
         targetSdk = 36
         versionCode = 3
         versionName = "0.3.0-phase3"
-        // libsignal ships native code per ABI (~30 MB each); real phones are arm64,
-        // x86_64 keeps the emulator usable.
-        ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
+        // libsignal ships large native code per ABI; every phone we target is arm64.
+        // (Add "x86_64" here temporarily to run on an emulator.)
+        ndk { abiFilters += listOf("arm64-v8a") }
         buildConfigField("String", "SUPABASE_URL", "\"${backendSetting("vynq.supabaseUrl", "VYNQ_SUPABASE_URL")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${backendSetting("vynq.supabaseAnonKey", "VYNQ_SUPABASE_ANON_KEY")}\"")
     }
@@ -55,7 +56,14 @@ android {
         compose = true
         buildConfig = true
     }
-    packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
+    packaging {
+        resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // libsignal-client carries desktop natives (Windows/Linux/macOS, ~600 MB) as
+        // jar resources; Android uses the per-ABI libraries from libsignal-android.
+        resources.excludes += listOf("/libsignal_jni*.so", "/libsignal_jni*.dylib", "/signal_jni*.dll")
+        // Signal's test-only build of the native library.
+        jniLibs.excludes += "**/libsignal_jni_testing.so"
+    }
     testOptions { unitTests.isIncludeAndroidResources = true }
 }
 

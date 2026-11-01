@@ -40,6 +40,7 @@ class MemoryMessagingDao : MessagingDao, CryptoStorage by MemoryCryptoStorage() 
     private val contacts = ConcurrentHashMap<String, Contact>()
     private val devices = ConcurrentHashMap<String, RemoteDevice>()
     private val messages = ConcurrentHashMap<String, Message>()
+    private val order = ConcurrentHashMap<String, Long>() // insertion order breaks timestamp ties, like rowid
     private fun bump() { changes.value++ }
 
     override fun contacts() = contacts.values.sortedBy { it.label }
@@ -58,11 +59,12 @@ class MemoryMessagingDao : MessagingDao, CryptoStorage by MemoryCryptoStorage() 
         devices.replaceAll { _, d -> if (d.userId == userId && d.active) d.copy(verified = verified) else d }; bump()
     }
 
-    override fun messages(peer: String) = messages.values.filter { it.peer == peer }.sortedBy { it.sentAt }
+    override fun messages(peer: String) = messages.values.filter { it.peer == peer }
+        .sortedWith(compareBy<Message> { it.sentAt }.thenBy { order[it.id] })
     override fun message(id: String) = messages[id]
     override fun insertMessage(message: Message): Boolean {
         val added = messages.putIfAbsent(message.id, message) == null
-        if (added) bump()
+        if (added) { order[message.id] = order.size.toLong(); bump() }
         return added
     }
     override fun updateStatus(id: String, status: MessageStatus) {
