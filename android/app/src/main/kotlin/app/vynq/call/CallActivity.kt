@@ -130,11 +130,19 @@ private fun CallScreen(s: CallState, calls: CallManager, onAnswer: () -> Unit) {
     var showStats by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(Color(0xFF07070C))) {
         // Remote video fills the screen; otherwise the contact's initial.
-        if (s.remoteVideo != null && room != null) {
+        if (s.remoteVideo != null && !s.remoteCameraOff && room != null) {
             VideoView(room, s.remoteVideo, mirror = false, modifier = Modifier.fillMaxSize())
         } else {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 Avatar(s.peerLabel, 112)
+                if (s.video && s.phase == CallPhase.Connected && s.remoteCameraOff) {
+                    Spacer(Modifier.height(VynqSpacing.md))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(VynqIcons.CameraOff, null, Modifier.size(16.dp), tint = Color.White.copy(alpha = 0.7f))
+                        Spacer(Modifier.size(6.dp))
+                        Text("${s.peerLabel} turned their camera off", style = VynqTheme.type.callout, color = Color.White.copy(alpha = 0.7f))
+                    }
+                }
             }
         }
 
@@ -160,22 +168,26 @@ private fun CallScreen(s: CallState, calls: CallManager, onAnswer: () -> Unit) {
         Column(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = VynqSpacing.xxl)) {
             if (s.phase == CallPhase.Ringing && !s.outgoing) {
                 Row(horizontalArrangement = Arrangement.spacedBy(72.dp)) {
-                    RoundButton(VynqIcons.Back, "Decline", Color(0xFFFF5A6E)) { calls.decline() }
+                    RoundButton(VynqIcons.EndCall, "Decline", Color(0xFFFF5A6E)) { calls.decline() }
                     RoundButton(if (s.video) VynqIcons.Video else VynqIcons.Phone, "Answer", Color(0xFF34D399)) { onAnswer() }
                 }
             } else if (s.phase != CallPhase.Ended) {
-                Row(horizontalArrangement = Arrangement.spacedBy(VynqSpacing.lg), verticalAlignment = Alignment.CenterVertically) {
-                    ToggleButton(VynqIcons.Bell, if (s.muted) "Unmute" else "Mute", active = s.muted) { calls.toggleMute() }
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = VynqSpacing.md),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    ToggleButton(if (s.muted) VynqIcons.MicOff else VynqIcons.Mic, if (s.muted) "Unmute" else "Mute", active = s.muted) { calls.toggleMute() }
+                    ToggleButton(if (s.speaker) VynqIcons.Speaker else VynqIcons.Earpiece, if (s.speaker) "Speaker" else "Earpiece", active = s.speaker) { calls.toggleSpeaker() }
                     if (s.video) {
-                        ToggleButton(VynqIcons.Video, if (s.cameraOn) "Camera off" else "Camera on", active = !s.cameraOn) { calls.toggleCamera() }
-                        ToggleButton(VynqIcons.Appearance, "Switch camera", active = false) { calls.switchCamera() }
+                        ToggleButton(if (s.cameraOn) VynqIcons.Video else VynqIcons.CameraOff, if (s.cameraOn) "Camera" else "Camera off", active = !s.cameraOn) { calls.toggleCamera() }
+                        ToggleButton(VynqIcons.FlipCamera, "Flip", active = false) { calls.switchCamera() }
                     }
-                    ToggleButton(VynqIcons.Gauge, if (s.speaker) "Earpiece" else "Speaker", active = s.speaker) { calls.toggleSpeaker() }
-                    ToggleButton(VynqIcons.Info, "Call details", active = showStats) { showStats = !showStats }
+                    ToggleButton(VynqIcons.Info, "Details", active = showStats) { showStats = !showStats }
                 }
                 Spacer(Modifier.height(VynqSpacing.xl))
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    RoundButton(VynqIcons.Phone, "End call", Color(0xFFFF5A6E)) { calls.hangUp() }
+                    RoundButton(VynqIcons.EndCall, "End", Color(0xFFFF5A6E)) { calls.hangUp() }
                 }
             }
         }
@@ -244,12 +256,17 @@ private fun RoundButton(icon: ImageVector, label: String, color: Color, onClick:
     }
 }
 
+/** A round control with its name under it, so every button says what it does. */
 @Composable
 private fun ToggleButton(icon: ImageVector, label: String, active: Boolean, onClick: () -> Unit) {
-    Box(
-        Modifier.size(52.dp).clip(CircleShape).background(if (active) Color.White else Color.White.copy(alpha = 0.16f)).pressable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) { Icon(icon, label, Modifier.size(24.dp), tint = if (active) Color.Black else Color.White) }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Box(
+            Modifier.size(56.dp).clip(CircleShape).background(if (active) Color.White else Color.White.copy(alpha = 0.16f)).pressable(onClick = onClick),
+            contentAlignment = Alignment.Center,
+        ) { Icon(icon, null, Modifier.size(26.dp), tint = if (active) Color.Black else Color.White) }
+        Spacer(Modifier.height(6.dp))
+        Text(label, style = VynqTheme.type.caption, color = Color.White)
+    }
 }
 
 @Composable

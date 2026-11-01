@@ -55,7 +55,7 @@ class AppContainer(context: Context) {
         .also { if (backendConfigured) it.attach() }
 
     /** 1:1 calls over LiveKit (created on first use; signals arrive through messaging). */
-    val calls: CallManager by lazy { CallManager(context, accounts, messaging, appScope) }
+    val calls: CallManager by lazy { CallManager(context, accounts, messaging, preferences, appScope) }
 
     init { messaging.onCallSignal = { calls.onSignal(it) } }
 }

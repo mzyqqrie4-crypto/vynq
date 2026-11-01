@@ -27,16 +27,14 @@ class CallNotifier(private val context: Context) {
 
     init {
         val system = context.getSystemService(NotificationManager::class.java)
+        // vynq rings by itself (Ringer), so the notification stays silent: no double ringing,
+        // and calls still ring where the phone mutes or blocks the call notification.
+        system.deleteNotificationChannel("calls_incoming")
         system.createNotificationChannel(
             NotificationChannel(CHANNEL_INCOMING, "Incoming calls", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Rings for calls from your contacts"
-                setSound(
-                    RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE),
-                    AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build(),
-                )
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 800, 600, 800, 600)
+                description = "Shows calls from your contacts. vynq plays the ringtone itself."
+                setSound(null, null)
+                enableVibration(false)
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             },
         )
@@ -70,7 +68,6 @@ class CallNotifier(private val context: Context) {
             .setContentIntent(full)
             .setStyle(NotificationCompat.CallStyle.forIncomingCall(person, decline, answer).setIsVideo(video))
             .build()
-            .apply { flags = flags or Notification.FLAG_INSISTENT } // keep ringing
         try { manager.notify(ID_INCOMING, n) } catch (e: SecurityException) { }
     }
 
@@ -94,7 +91,7 @@ class CallNotifier(private val context: Context) {
     }
 
     companion object {
-        const val CHANNEL_INCOMING = "calls_incoming"
+        const val CHANNEL_INCOMING = "calls_incoming_v2"
         const val CHANNEL_ONGOING = "calls_ongoing"
         const val ID_INCOMING = 100
         const val ID_ONGOING = 101

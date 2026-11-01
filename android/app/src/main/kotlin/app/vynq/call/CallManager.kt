@@ -3,6 +3,15 @@ package app.vynq.call
 import android.content.Context
 import android.content.Intent
 import android.util.Log
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.ProcessLifecycleOwner
+import app.vynq.data.prefs.CallQuality
+import app.vynq.data.prefs.PreferencesRepository
+import io.livekit.android.room.participant.VideoTrackPublishDefaults
+import io.livekit.android.room.track.LocalVideoTrackOptions
+import io.livekit.android.room.track.VideoCaptureParameter
+import io.livekit.android.room.track.VideoEncoding
+import kotlinx.coroutines.flow.first
 import app.vynq.data.auth.BackendApi
 import app.vynq.data.messaging.CallSignal
 import app.vynq.data.messaging.MessagingService
@@ -53,6 +62,8 @@ data class CallState(
     val endReason: String? = null,
     val localVideo: VideoTrack? = null,
     val remoteVideo: VideoTrack? = null,
+    /** The other person turned their camera off. */
+    val remoteCameraOff: Boolean = false,
 )
 
 /**
@@ -68,12 +79,14 @@ class CallManager(
     private val context: Context,
     private val api: BackendApi,
     private val messaging: MessagingService,
+    private val prefs: PreferencesRepository,
     private val scope: CoroutineScope,
 ) {
     private val _state = MutableStateFlow<CallState?>(null)
     val state: StateFlow<CallState?> = _state.asStateFlow()
 
     val notifier = CallNotifier(context)
+    private val ringer = Ringer(context)
     private var room: Room? = null
     private var callKey: String? = null
     private var roomJob: Job? = null
@@ -130,6 +143,11 @@ class CallManager(
                 val label = messaging.session.value?.messenger?.contactLabel(s.from) ?: "Someone"
                 _state.value = CallState(s.callId, s.from, label, outgoing = false, video = s.video, phase = CallPhase.Ringing)
                 notifier.showIncoming(s.callId, label, s.video)
+                ringer.start()
+                // Already open: show the call screen right away (allowed while vynq is in front).
+                if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                    runCatching { context.startActivity(callIntent(context)) }
+                }
                 armTimeout(s.callId, RING_TIMEOUT_MS) {
                     note(s.from, if (s.video) "Missed video call" else "Missed voice call")
                     clear()
@@ -160,6 +178,7 @@ class CallManager(
         val s = _state.value ?: return
         if (s.outgoing || s.phase != CallPhase.Ringing) return
         timeout?.cancel()
+        ringer.stop()
         notifier.cancelIncoming()
         _state.update { it?.copy(phase = CallPhase.Connecting) }
         scope.launch {
@@ -230,10 +249,18 @@ class CallManager(
         val token = creds["token"]?.jsonPrimitive?.content ?: return end("Calls aren't set up on the server yet.", notifyPeer = true)
 
         val keyProvider = BaseKeyProvider().apply { setSharedKey(key, null) }
+        val profile = CallProfile.of(prefs.callQuality.first())
         val r = LiveKit.create(
             context,
-            // Frame encryption (AES-GCM, LiveKit's default) with the key from the Signal invite.
-            RoomOptions(adaptiveStream = true, dynacast = true, e2eeOptions = E2EEOptions(keyProvider = keyProvider)),
+            // 1:1 calls: one full-quality stream (no simulcast layers or view-size downscaling),
+            // frame-encrypted (AES-GCM) with the key from the Signal invite.
+            RoomOptions(
+                adaptiveStream = false,
+                dynacast = false,
+                e2eeOptions = E2EEOptions(keyProvider = keyProvider),
+                videoTrackCaptureDefaults = LocalVideoTrackOptions(captureParams = profile.capture),
+                videoTrackPublishDefaults = VideoTrackPublishDefaults(videoEncoding = profile.encoding, simulcast = false),
+            ),
         )
         room = r
         // Headsets first; then speaker for video, earpiece for voice.
@@ -259,12 +286,22 @@ class CallManager(
         when (e) {
             is RoomEvent.TrackSubscribed -> {
                 val track = e.track
+                if (track is VideoTrack) _state.update { it?.copy(remoteCameraOff = e.publication.muted) }
                 Log.i(TAG, "subscribed: ${track.kind}")
                 if (track is VideoTrack) _state.update { it?.copy(remoteVideo = track) }
                 markConnected()
             }
             is RoomEvent.ParticipantConnected -> markConnected()
             is RoomEvent.TrackUnsubscribed -> if (e.track is VideoTrack) _state.update { it?.copy(remoteVideo = null) }
+            is RoomEvent.TrackMuted -> if (e.participant != room?.localParticipant && e.publication.kind == Track.Kind.VIDEO) {
+                _state.update { it?.copy(remoteCameraOff = true) }
+            }
+            is RoomEvent.TrackUnmuted -> if (e.participant != room?.localParticipant && e.publication.kind == Track.Kind.VIDEO) {
+                _state.update { it?.copy(remoteCameraOff = false) }
+            }
+            is RoomEvent.TrackUnpublished -> if (e.participant != room?.localParticipant && e.publication.kind == Track.Kind.VIDEO) {
+                _state.update { it?.copy(remoteVideo = null, remoteCameraOff = true) }
+            }
             is RoomEvent.TrackE2EEStateEvent -> {
                 Log.i(TAG, "e2ee ${e.track.kind} ${if (e.participant == room?.localParticipant) "local" else "remote"}: ${e.state}")
                 trackE2ee[(if (e.participant == room?.localParticipant) "local:" else "remote:") + e.track.sid] = e.state
@@ -324,6 +361,7 @@ class CallManager(
         room = null
         callKey = null
         trackE2ee.clear()
+        ringer.stop()
         notifier.cancelIncoming()
         CallService.stop(context)
         _state.update { it?.copy(phase = CallPhase.Ended, endReason = reason, localVideo = null, remoteVideo = null) }
@@ -361,5 +399,21 @@ class CallManager(
         fun callIntent(context: Context, action: String? = null): Intent =
             Intent(context, CallActivity::class.java).setAction(action ?: CallActivity.ACTION_SHOW)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    }
+}
+
+/**
+ * What a call sends for each Settings → Call quality choice. The encoder still
+ * lowers resolution and bitrate on its own when the network can't keep up.
+ * (Phase 5 measures these against real networks and tunes them.)
+ */
+data class CallProfile(val capture: VideoCaptureParameter, val encoding: VideoEncoding) {
+    companion object {
+        fun of(q: CallQuality): CallProfile = when (q) {
+            CallQuality.DataSaver -> CallProfile(VideoCaptureParameter(640, 360, 24), VideoEncoding(500_000, 24))
+            CallQuality.Automatic -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(2_500_000, 30))
+            CallQuality.High -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(4_000_000, 30))
+            CallQuality.Maximum -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(6_000_000, 30))
+        }
     }
 }
