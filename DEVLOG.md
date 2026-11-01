@@ -21,6 +21,8 @@
 - **New device:** the realme signed out and back in (same account, new device). The Xiaomi showed "has a new device, so your safety number with them changed" and the Verified badge went away (owner confirmed).
 - **Bug found and fixed in that test:** sign-out wiped the device's keys but left it active on the server, so the Xiaomi kept encrypting to the dead device (4 messages lost) and every sign-out used up a device slot. Sign-out now calls `revoke_device` first (also drops its keys and undelivered mail). The dead device from the test was retired by hand, as the fix would have done.
 
+- **Sign-out keeps history** (owner request): each account on a phone has its own device id, remembered across sign-out. Tested on the realme: signed out (normal), the Xiaomi sent a message meanwhile, signed back in with the same email: old history still there, the new message arrived (owner confirmed); server shows the same device (no new device, no new keys) and an empty mailbox. "Sign out and erase" retires the device and deletes local data (unit-tested); deleting the account does too. This replaces the sign-out-revokes-device fix above for normal sign-out.
+
 **Phase 3 acceptance (docs/04-roadmap.md)**
 | Criterion | Result |
 |---|---|
@@ -37,7 +39,8 @@
 - The server sees who messages whom and when (no sealed sender yet), and the OS sees notification text if previews are on.
 - New-device approval from an existing device (threat model T4) isn't built; contacts are warned instead.
 - Unit tests now need Java 21 (CI installs it; locally a portable Temurin 21 is configured in the user's Gradle settings).
-- A device that signs out while offline stays active on the server (its mail expires after 30 days). A stale-device cleanup belongs in Phase 8.
+- A phone signed out for more than 30 days loses mail sent in that time (mailbox expiry). Signed-out devices stay active on the server by design; a stale-device cleanup belongs in Phase 8.
+- History on a signed-out phone stays readable to anyone who can unlock the phone *and* break into app storage (it's encrypted with a Keystore key, not with the account). Use "Sign out and erase" before handing a phone over.
 
 **Blockers:** none.
 
