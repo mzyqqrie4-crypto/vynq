@@ -18,13 +18,30 @@
   - **Notifications with vynq in the background and the screen off:** Xiaomi (HyperOS CN) and realme (ColorOS) both showed the message notification. On the Xiaomi this needed notification permission, Autostart and battery "No restrictions"; before Autostart was allowed, HyperOS blocked the post-update restart.
   - Both phones have Google Play services, so "no Google services at all" wasn't tested on a device. vynq doesn't use them either way.
 
+- **New device:** the realme signed out and back in (same account, new device). The Xiaomi showed "has a new device, so your safety number with them changed" and the Verified badge went away (owner confirmed).
+- **Bug found and fixed in that test:** sign-out wiped the device's keys but left it active on the server, so the Xiaomi kept encrypting to the dead device (4 messages lost) and every sign-out used up a device slot. Sign-out now calls `revoke_device` first (also drops its keys and undelivered mail). The dead device from the test was retired by hand, as the fix would have done.
+
+**Phase 3 acceptance (docs/04-roadmap.md)**
+| Criterion | Result |
+|---|---|
+| Android↔Android delivered while recipient offline then online | ✅ on the two phones |
+| Server DB contains only ciphertext (verified by query) | ✅ envelope bytes checked for the message's words |
+| Safety-number verification works | ✅ same digits on both phones, marked verified |
+| Key change triggers warning | ✅ new device → notice + verification cleared |
+| Attachment round-trip with integrity check | ✅ photo on the phones; tampering rejected in tests |
+| Encryption unit tests pass | ✅ 15 crypto + 11 messaging scenarios on real libsignal |
+
 **Not verified / known gaps**
-- New-device warning on real phones (unit-tested only so far).
 - Battery cost of the background connection: not measured.
 - After the phone kills vynq (e.g. swiped away on HyperOS), messages wait until the periodic job or next app start; calls will need a decision on FCM / vendor push (architecture §7, open decision).
 - The server sees who messages whom and when (no sealed sender yet), and the OS sees notification text if previews are on.
 - New-device approval from an existing device (threat model T4) isn't built; contacts are warned instead.
 - Unit tests now need Java 21 (CI installs it; locally a portable Temurin 21 is configured in the user's Gradle settings).
+- A device that signs out while offline stays active on the server (its mail expires after 30 days). A stale-device cleanup belongs in Phase 8.
+
+**Blockers:** none.
+
+**Next action:** you review and merge PR #2. Then Phase 4 (calls), which starts with the push decision in architecture §7.
 
 
 ## 2026-11-01: Phase 2 complete — accounts
