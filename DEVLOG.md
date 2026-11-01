@@ -23,6 +23,10 @@
 
 - **Sign-out keeps history** (owner request): each account on a phone has its own device id, remembered across sign-out. Tested on the realme: signed out (normal), the Xiaomi sent a message meanwhile, signed back in with the same email: old history still there, the new message arrived (owner confirmed); server shows the same device (no new device, no new keys) and an empty mailbox. "Sign out and erase" retires the device and deletes local data (unit-tested); deleting the account does too. This replaces the sign-out-revokes-device fix above for normal sign-out.
 
+- **History across phones** (owner decision: recovery key). Every text/photo message is also stored on the server encrypted with a per-account history key only the account's phones hold (AES-256-GCM, bound to the record id). A new phone gets the key by approval on an existing phone (sent over Signal) or with the 40-character recovery key, which wraps it (HKDF + GCM; the server stores only the wrapped key). Deleted with the account. Backend 55/55 (7 new), Android 65/65 (3 crypto + 5 two-phone history tests: recovery key, approval, no hand-over without approval, wrong key refused, messages received while locked backed up later).
+  - On the phones: the Xiaomi set up @mzyqqrie's history and backed up all 46 existing messages. The realme signed out of @zyqqrie2 (history kept) and signed in as @mzyqqrie, asked for history, the Xiaomi approved, and the full conversation appeared (owner confirmed). Server: @mzyqqrie has 2 phones, 46 records; the realme keeps both accounts' databases separately.
+  - Not done on a phone: unlocking with the recovery key (unit-tested only).
+
 **Phase 3 acceptance (docs/04-roadmap.md)**
 | Criterion | Result |
 |---|---|
@@ -40,6 +44,7 @@
 - New-device approval from an existing device (threat model T4) isn't built; contacts are warned instead.
 - Unit tests now need Java 21 (CI installs it; locally a portable Temurin 21 is configured in the user's Gradle settings).
 - A phone signed out for more than 30 days loses mail sent in that time (mailbox expiry). Signed-out devices stay active on the server by design; a stale-device cleanup belongs in Phase 8.
+- Encrypted history: the server sees how many messages an account has, their sizes and when they were stored, not their content. Anyone with the recovery key *and* the account's email can read the history. Someone who takes over the email can register a phone but still needs approval on an existing phone or the recovery key. Losing every phone and the recovery key loses the history, by design.
 - History on a signed-out phone stays readable to anyone who can unlock the phone *and* break into app storage (it's encrypted with a Keystore key, not with the account). Use "Sign out and erase" before handing a phone over.
 
 **Blockers:** none.
