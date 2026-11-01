@@ -1,0 +1,11 @@
+# Normalise to LF in the repository; CI runs on Linux.
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary
+*.png binary
+*.jpg binary
+*.jar binary
+*.ttf binary
+*.otf binary

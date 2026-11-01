@@ -1,0 +1,30 @@
+# Build output
+build/
+.gradle/
+.kotlin/
+*.apk
+*.aab
+captures/
+
+# Local config & secrets — never commit
+local.properties
+.env
+.env.*
+*.jks
+*.keystore
+keystore.properties
+google-services.json
+GoogleService-Info.plist
+*.p8
+*.p12
+*.mobileprovision
+
+# IDE / OS
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+
+# Tooling
+node_modules/
+__pycache__/

@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="vynq_window">#F7F6F3</color>
+    <!-- The splash is always dark: it is a brand moment, and it avoids a flash on dark devices. -->
+    <color name="vynq_splash">#07070C</color>
+</resources>
