@@ -1,5 +1,26 @@
 # vynq development log
 
+## 2026-11-01: Phase 2 complete — accounts
+
+**Last check: account deletion from the app.** The owner deleted @test from Settings on the realme. The phone's session file and device id were wiped and it returned to Welcome. Server afterwards: 1 user, 1 profile, 1 device. @test's profile and device were removed by the cascade; @mzyqqrie and the Xiaomi untouched.
+
+**Implemented:** email-code sign-in (6 digits, real email through Gmail SMTP), encrypted session storage, single-flight token refresh, server-side sign-out, usernames with look-alike and reserved-name blocking, device registration (max 5, ids never move between accounts, a new device after sign-out), username change, account deletion. RLS on every table; all writes through RPCs.
+
+**What works on real hardware:** Xiaomi 17 Pro (Android 17) and realme 14x 5G (Android 16) over Wi-Fi debugging. Sign-in, username claim, device naming, session kept across app updates, sign-out, two accounts on two phones, deletion. No crashes seen.
+
+**Tested:** 25 backend policy tests (PGlite), 10/10 live smoke tests, 29 Android JVM tests (incl. 9 screenshots), debug and release builds, CI on both.
+
+**Incomplete / known:**
+- "Connected devices" list in Settings still says "Coming soon" (the data is there; the screen isn't).
+- Email goes out through a personal-style Gmail account: fine for testing, not for public use (move to a domain + Resend/Postmark).
+- USB debugging never worked on the Xiaomi (cable); Wi-Fi only.
+- An unexplained moment where the session file didn't show on the first `ls` after re-sign-in (present on the second); not seen again.
+- iPhone not tested (iOS app is Phase 7).
+
+**Blockers:** none.
+
+**Next action:** you review and merge PR #1. Then Phase 3: end-to-end encrypted messaging with libsignal.
+
 ## 2026-11-01: Two accounts on two physical phones (roadmap acceptance)
 
 - Second phone: realme 14x 5G (RMX3943, Android 16), paired over Wi-Fi debugging. Latest build (sign-out device fix) installed on both phones; the Xiaomi update kept its session.
