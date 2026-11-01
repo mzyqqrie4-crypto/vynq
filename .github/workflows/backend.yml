@@ -1,0 +1,28 @@
+name: Backend
+
+on:
+  push:
+    branches: [main]
+    paths: ["backend/**", ".github/workflows/backend.yml"]
+  pull_request:
+    paths: ["backend/**", ".github/workflows/backend.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  policy-tests:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: backend/tests
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: backend/tests/package-lock.json
+      - run: npm ci
+      - name: RLS and RPC tests (PGlite)
+        run: npm test

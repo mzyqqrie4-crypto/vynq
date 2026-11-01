@@ -20,6 +20,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -27,11 +31,17 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.vynq.BuildConfig
 import app.vynq.container
+import app.vynq.data.auth.AuthState
+import app.vynq.data.auth.Profile
+import app.vynq.data.auth.userMessage
 import app.vynq.data.prefs.CallQuality
 import app.vynq.designsystem.component.ListGroup
 import app.vynq.designsystem.component.ListRow
 import app.vynq.designsystem.component.RowDivider
 import app.vynq.designsystem.component.SectionLabel
+import app.vynq.designsystem.component.VynqAlert
+import app.vynq.designsystem.component.VynqConfirm
+import kotlinx.coroutines.launch
 import app.vynq.designsystem.icon.VynqIcons
 import app.vynq.designsystem.theme.ThemeMode
 import app.vynq.designsystem.theme.VynqPalette
@@ -47,6 +57,15 @@ fun SettingsTab(onOpen: (String) -> Unit) {
     val prefs = context.container.preferences
     val theme by prefs.themeMode.collectAsStateWithLifecycle(ThemeMode.System)
     val quality by prefs.callQuality.collectAsStateWithLifecycle(CallQuality.Automatic)
+    val auth = context.container.authRepository
+    val account = context.container.accountRepository
+    val authState by auth.state.collectAsStateWithLifecycle()
+    val signedIn = authState as? AuthState.SignedIn
+    val profile by produceState<Profile?>(null, signedIn) {
+        value = if (signedIn != null) account.profile().getOrNull() else null
+    }
+    var confirm by remember { mutableStateOf<AccountAction?>(null) }
+    var failure by remember { mutableStateOf<String?>(null) }
     val c = VynqTheme.colors
 
     Column(
@@ -55,7 +74,6 @@ fun SettingsTab(onOpen: (String) -> Unit) {
         Spacer(Modifier.height(VynqSpacing.md))
         LargeTitle("Settings")
 
-        // Profile header: signed-out state, stated plainly.
         Row(
             Modifier.fillMaxWidth().padding(vertical = VynqSpacing.lg),
             verticalAlignment = Alignment.CenterVertically,
@@ -65,16 +83,39 @@ fun SettingsTab(onOpen: (String) -> Unit) {
                 Icon(VynqIcons.Contacts, null, Modifier.size(28.dp), tint = VynqPalette.SoftWhite)
             }
             Column {
-                Text("Not signed in", style = VynqTheme.type.title2, color = c.textPrimary)
-                Text("Your profile and username appear here", style = VynqTheme.type.footnote, color = c.textSecondary)
+                val (title, subtitle) = when {
+                    signedIn == null -> "Not signed in" to "Your profile and username appear here"
+                    profile?.username != null -> "@${profile?.username}" to signedIn.email
+                    else -> signedIn.email to "Signed in"
+                }
+                Text(title, style = VynqTheme.type.title2, color = c.textPrimary)
+                Text(subtitle, style = VynqTheme.type.footnote, color = c.textSecondary)
             }
         }
 
         SectionLabel("Account")
         ListGroup {
-            ListRow("Profile & username", icon = VynqIcons.Contacts, enabled = false, disabledReason = "Needs sign-in")
+            if (signedIn == null) {
+                ListRow("Profile & username", icon = VynqIcons.Contacts, enabled = false, disabledReason = "Needs sign-in")
+            } else {
+                ListRow(
+                    "Username", icon = VynqIcons.Contacts,
+                    value = profile?.username?.let { "@$it" } ?: "Not set",
+                    onClick = { onOpen(Routes.USERNAME_CHANGE) },
+                )
+            }
             RowDivider()
-            ListRow("Connected devices", icon = VynqIcons.Devices, enabled = false, disabledReason = "Needs sign-in")
+            ListRow("Connected devices", icon = VynqIcons.Devices, enabled = false, disabledReason = "Coming soon")
+            if (signedIn != null) {
+                RowDivider()
+                ListRow("Sign out", icon = VynqIcons.Back, iconTint = c.textSecondary, onClick = { confirm = AccountAction.SignOut })
+                RowDivider()
+                ListRow(
+                    "Delete account", icon = VynqIcons.Shield, iconTint = c.danger,
+                    subtitle = "Removes your profile and devices",
+                    onClick = { confirm = AccountAction.Delete },
+                )
+            }
         }
 
         SectionLabel("Preferences")
@@ -108,7 +149,34 @@ fun SettingsTab(onOpen: (String) -> Unit) {
         }
         Spacer(Modifier.height(TabBarClearance))
     }
+
+    // Account actions run in the app scope so leaving the screen can't cancel them halfway.
+    val scope = context.container.appScope
+    when (confirm) {
+        AccountAction.SignOut -> VynqConfirm(
+            title = "Sign out?",
+            message = "This device's session is revoked. You can sign back in with a new email code.",
+            confirm = "Sign out",
+            onConfirm = { confirm = null; scope.launch { auth.signOut() } },
+            onDismiss = { confirm = null },
+        )
+        AccountAction.Delete -> VynqConfirm(
+            title = "Delete your account?",
+            message = "Your username, profile and registered devices are permanently removed. This can't be undone.",
+            confirm = "Delete",
+            destructive = true,
+            onConfirm = {
+                confirm = null
+                scope.launch { account.deleteAccount().onFailure { failure = it.userMessage() } }
+            },
+            onDismiss = { confirm = null },
+        )
+        null -> Unit
+    }
+    failure?.let { VynqAlert("Account not deleted", it, "OK") { failure = null } }
 }
+
+private enum class AccountAction { SignOut, Delete }
 
 fun ThemeMode.label() = when (this) {
     ThemeMode.System -> "System"

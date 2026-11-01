@@ -1,5 +1,78 @@
 # vynq development log
 
+## 2026-11-01: Phase 2 complete — accounts
+
+**Last check: account deletion from the app.** The owner deleted @test from Settings on the realme. The phone's session file and device id were wiped and it returned to Welcome. Server afterwards: 1 user, 1 profile, 1 device. @test's profile and device were removed by the cascade; @mzyqqrie and the Xiaomi untouched.
+
+**Implemented:** email-code sign-in (6 digits, real email through Gmail SMTP), encrypted session storage, single-flight token refresh, server-side sign-out, usernames with look-alike and reserved-name blocking, device registration (max 5, ids never move between accounts, a new device after sign-out), username change, account deletion. RLS on every table; all writes through RPCs.
+
+**What works on real hardware:** Xiaomi 17 Pro (Android 17) and realme 14x 5G (Android 16) over Wi-Fi debugging. Sign-in, username claim, device naming, session kept across app updates, sign-out, two accounts on two phones, deletion. No crashes seen.
+
+**Tested:** 25 backend policy tests (PGlite), 10/10 live smoke tests, 29 Android JVM tests (incl. 9 screenshots), debug and release builds, CI on both.
+
+**Incomplete / known:**
+- "Connected devices" list in Settings still says "Coming soon" (the data is there; the screen isn't).
+- Email goes out through a personal-style Gmail account: fine for testing, not for public use (move to a domain + Resend/Postmark).
+- USB debugging never worked on the Xiaomi (cable); Wi-Fi only.
+- An unexplained moment where the session file didn't show on the first `ls` after re-sign-in (present on the second); not seen again.
+- iPhone not tested (iOS app is Phase 7).
+
+**Blockers:** none.
+
+**Next action:** you review and merge PR #1. Then Phase 3: end-to-end encrypted messaging with libsignal.
+
+## 2026-11-01: Two accounts on two physical phones (roadmap acceptance)
+
+- Second phone: realme 14x 5G (RMX3943, Android 16), paired over Wi-Fi debugging. Latest build (sign-out device fix) installed on both phones; the Xiaomi update kept its session.
+- Owner signed in on the realme with a second email and claimed @test.
+- Server check (admin API, emails masked in output): 2 users, 2 profiles, 2 devices. @mzyqqrie → "Xiaomi 17 Pro"; @test → "realme 14x 5G". Each device belongs to its own account; no shared device ids. No crashes in the realme's crash log.
+- Cross-account visibility isn't re-checked from the phones (that would need each user's token); it's covered by the live smoke test (own-row RLS, device isolation).
+- **Remaining for Phase 2:** account deletion from the app.
+
+## 2026-11-01: Live Supabase project
+
+- Created `vynq` (ap-southeast-1, nearest to Malaysia). Your signup's default Ireland project is untouched.
+- Migration applied, `delete-account` deployed, auth config pushed (6-digit code, 10 min expiry; remote defaults were 8 digits / 1 hour).
+- **Live smoke test 10/10** (`backend/e2e/smoke.mjs`): sign-in via code, wrong code → `otp_expired`, own-row RLS, username claim + taken/look-alike/reserved errors in the exact shape the app maps, no direct username writes, lookup without email, device isolation + takeover block, refresh rotation + sign-out revocation, deletion cascade. 0 users left afterwards.
+- App: publishable key + URL in git-ignored `local.properties`; `Authorization` now sent only with a user token (new-style keys belong in `apikey` only).
+- ~~Blocker: sign-in emails.~~ **Resolved:** custom SMTP via a dedicated Gmail account (no domain yet); "Your vynq code" template live. A real code sent through the app's endpoint arrived in the owner's inbox (confirmed by the owner). This created one real account (owner's email, no username yet).
+
+## 2026-11-01: First real device — Xiaomi 17 Pro (Android 17, HyperOS 4.0), over Wi-Fi debugging
+
+- USB failed (charge-only cable / "Device Descriptor Request Failed"); wireless debugging worked.
+- Cold start 300 ms (debug build). No crashes in any run. Edge-to-edge correct.
+- Owner signed in with a real emailed code, claimed @mzyqqrie; profile + device verified server-side.
+- Fixed: device name came from `Build.MODEL` ("25098PN5AC"); now uses the system device name ("Xiaomi 17 Pro"). Device record refreshes on each signed-in start.
+- App update kept the session (no re-sign-in). Sign-out → Welcome; reopen stayed signed out; sign-in again skipped the username step; still one device record (no duplicate).
+- Session file `no_backup/session.v1` (1,099 B) checked on the phone: no plaintext token, email or username strings.
+- One check couldn't be done the way I wanted: a direct database query for revoked refresh tokens was blocked (it turned TLS verification off). Revocation on sign-out is covered by the live smoke test instead.
+- **Remaining for Phase 2:** a second account on a second phone, and account deletion from the app.
+
+## 2026-11-01: Phase 2 in progress — accounts (code complete, not yet run against Supabase)
+
+**Implemented** (branch `phase2/auth-profiles`)
+- Repo on GitHub (private). Git + GitHub CLI installed.
+- Backend (`backend/`): migration for profiles, usernames, devices, rate limits. RLS on everything, column-level grants, every write through SECURITY DEFINER RPCs in a schema API roles can't reach. Usernames are ASCII-only; a "skeleton" (separators dropped; 0/o, 1/i/l, 5/s, rn/m, vv/w, cl/d folded) blocks look-alikes and reserved names. Max 5 devices; a device id can't move between accounts; revocation is final. `delete-account` Edge Function.
+- Android: `SupabaseAuthRepository` (thin OkHttp client; no SDK): email OTP, verify, single-flight token refresh, server-side sign-out, profile, username claim, device registration, account deletion. Session encrypted with an Android Keystore AES-GCM key in no-backup storage. Endpoint comes from git-ignored `local.properties`; without it the app keeps saying honestly that accounts aren't connected.
+- Screens: email → 6-digit code (auto-submit, 60 s resend timer, change email) → choose username → main. Settings shows @username/email, change username, sign out, delete account (confirmations). Splash holds until the stored session is read; signing out or an expired session returns to Welcome.
+- R8 9.5.28 pinned → Kotlin 2.4 metadata warning gone. CI actions on current majors; new Backend CI job.
+
+**Tested (executed)**
+- Backend: 25/25 policy tests on PGlite (real Postgres in WASM) + a Supabase `auth` shim: own-row-only reads, no direct writes, anon blocked, look-alike/reserved names, rate limits, device takeover/limit/revocation, private schema unreachable, cascade on delete.
+- Android: 28/28 JVM tests: 11 client tests against a mock server (OTP, wrong code, concurrent refresh = 1 request, dead refresh token wipes session, offline keeps session, RPC error mapping, sign-out, deletion, 401), username rules, Phase 1 tests, 9 screenshots.
+- `assembleDebug` ✅, `assembleRelease` ✅ (2.5 MB).
+
+**Not verified**
+- Nothing has run against a real Supabase project (none exists yet): OTP email delivery, the real `auth.uid()`, PostgREST error bodies, the Edge Function (Deno not installed here).
+- Keystore session storage only runs on a device (Robolectric can't emulate AndroidKeyStore).
+- Two accounts on two physical devices (roadmap acceptance) not done.
+
+**Notes**
+- OkHttp held at 5.4.0: 5.5 requires compileSdk 37.
+- Newer R8 prints a harmless "async parsing" notice with AGP 8.13.
+
+**Next action:** you create the Supabase project; I apply the migration, deploy the function and run the end-to-end checks.
+
 ## 2026-11-01: Decision — libsignal (AGPL-3.0)
 
 The owner approved libsignal for messaging E2EE. The client apps will be AGPL-3.0-or-later. Still to do: add a `LICENSE` file when the repository is created, add a source-code link in About, check every new dependency's licence, and review App Store compatibility before Phase 7. Details are in `docs/01-architecture.md` §5. vodozemac stays documented as the fallback.

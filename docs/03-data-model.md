@@ -1,5 +1,7 @@
 # 03 — Backend data model (draft, implemented in Phase 2–3)
 
+> **Phase 2 status:** `profiles`, `devices` (without key columns) and `rate_limits` are implemented in `backend/supabase/migrations/`. Differences from this draft: usernames are lowercase ASCII `text` (not `citext`), `username_skeleton` is a generated column, and `rate_limits` lives in a non-API `private` schema. The migration is the source of truth.
+
 Postgres (Supabase). RLS is **enabled and deny-by-default on every table**. `auth.users` holds the email, which is never exposed to other users.
 
 ```sql

@@ -146,3 +146,29 @@ fun VynqAlert(title: String, message: String, confirm: String, onDismiss: () -> 
         confirmButton = { TextButton(onClick = onDismiss) { Text(confirm, style = VynqTheme.type.headline, color = c.accent) } },
     )
 }
+
+/** Two-choice confirmation. [destructive] colours the action red; Cancel is always the safe default. */
+@Composable
+fun VynqConfirm(
+    title: String,
+    message: String,
+    confirm: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    destructive: Boolean = false,
+) {
+    val c = VynqTheme.colors
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = c.surfaceRaised,
+        shape = RoundedCornerShape(VynqRadius.xl),
+        title = { Text(title, style = VynqTheme.type.title2, color = c.textPrimary) },
+        text = { Text(message, style = VynqTheme.type.callout, color = c.textSecondary) },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", style = VynqTheme.type.headline, color = c.accent) } },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(confirm, style = VynqTheme.type.headline, color = if (destructive) c.danger else c.accent)
+            }
+        },
+    )
+}

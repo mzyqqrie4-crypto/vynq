@@ -1,0 +1,38 @@
+# Supabase CLI config for local development (`supabase start`).
+# The hosted project's equivalents are set in the dashboard; see backend/README.md.
+project_id = "vynq"
+
+[api]
+schemas = ["public"]
+max_rows = 100
+
+[auth]
+site_url = "app.vynq://auth"
+enable_signup = true
+jwt_expiry = 3600
+enable_refresh_token_rotation = true
+refresh_token_reuse_interval = 10
+
+[auth.email]
+enable_signup = true
+enable_confirmations = false
+otp_length = 6
+otp_expiry = 600
+max_frequency = "60s"
+
+[auth.sms]
+enable_signup = false
+
+[functions.delete-account]
+verify_jwt = true
+
+# The app signs in with the 6-digit code, so both templates must show it
+# (first sign-in uses "confirmation", returning users get "magic_link").
+# Requires custom SMTP (set in the dashboard; credentials never live here).
+[auth.email.template.confirmation]
+subject = "Your vynq code"
+content_path = "./supabase/templates/otp.html"
+
+[auth.email.template.magic_link]
+subject = "Your vynq code"
+content_path = "./supabase/templates/otp.html"

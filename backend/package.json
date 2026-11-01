@@ -1,0 +1,10 @@
+{
+  "name": "vynq-backend",
+  "private": true,
+  "scripts": {
+    "supabase": "supabase"
+  },
+  "devDependencies": {
+    "supabase": "2.121.0"
+  }
+}

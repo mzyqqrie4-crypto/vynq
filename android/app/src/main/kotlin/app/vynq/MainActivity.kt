@@ -11,15 +11,18 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.vynq.data.auth.AuthState
 import app.vynq.designsystem.theme.ThemeMode
 import app.vynq.designsystem.theme.VynqTheme
 import app.vynq.ui.VynqNavHost
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
-        installSplashScreen()
+        val splash = installSplashScreen()
         super.onCreate(savedInstanceState)
         val prefs = container.preferences
+        val auth = container.authRepository
+        splash.setKeepOnScreenCondition { auth.state.value is AuthState.Loading }
 
         setContent {
             val mode by prefs.themeMode.collectAsStateWithLifecycle(initialValue = ThemeMode.System)
