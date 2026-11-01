@@ -8,8 +8,8 @@ Nothing below has been created. Each item needs your credentials, payment or a d
 | Now | **Private GitHub repository** `vynq` | Source and CI. You create it, or authorise `gh` and I create it. | Free |
 | ~~Now~~ | ~~Decision: libsignal AGPL-3.0 OK?~~ **Decided 2026-11-01: yes.** The apps are AGPL-3.0 (see architecture §5). | — | — |
 | Phase 7 | **App Store + AGPL review** | Apple's terms conflict with AGPL for apps you don't hold copyright to. Needs a decision before iOS distribution. | Possibly legal advice |
-| Phase 2 | **Supabase project** (region near you) | Auth, database, storage, functions. Provide the URL + anon key via `local.properties`, never committed. | Free tier → $25/mo Pro |
-| Phase 2 | Email sender (Supabase SMTP or Resend/Postmark) + a domain | Reliable OTP mail. | Domain ~$10–15/yr |
+| ~~Phase 2~~ | ~~Supabase project~~ **Done 2026-11-01:** `vynq`, Singapore, free plan. | Auth, database, storage, functions. | Free tier → $25/mo Pro |
+| **Now** | **Email sender (custom SMTP) + a domain** | **Blocking real sign-in.** The free built-in sender can't carry the 6-digit code and only reaches your own address. Options: Resend or Postmark with a domain you own. | Domain ~$10–15/yr; sender free tier |
 | Phase 3 | **Firebase project** (FCM only, Analytics disabled) | Android push. `google-services.json` is kept out of git. | Free |
 | Phase 4 | **LiveKit Cloud** project (dev) → later a **VPS** for self-hosted LiveKit + TURN (2 vCPU, near users) | Media SFU/TURN. | Free tier → ~$10–40/mo VPS |
 | Phase 4 | Physical devices: Xiaomi 17 Pro, 17T, USB debugging enabled | Camera/telecom testing. Emulators can't validate call quality. | — |

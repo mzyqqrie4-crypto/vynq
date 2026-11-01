@@ -195,8 +195,9 @@ class SupabaseAuthRepository(
     ): String = withContext(io) {
         val request = Request.Builder()
             .url(base + path)
+            // Publishable keys go in `apikey` only; Authorization carries a user's JWT.
             .header("apikey", anonKey)
-            .header("Authorization", "Bearer ${token ?: anonKey}")
+            .apply { if (token != null) header("Authorization", "Bearer $token") }
             .header("Accept", accept)
             .method(method, body?.toString()?.toRequestBody(JSON_TYPE) ?: if (method == "GET") null else EMPTY_BODY)
             .build()

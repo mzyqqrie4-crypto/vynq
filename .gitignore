@@ -28,3 +28,6 @@ Thumbs.db
 # Tooling
 node_modules/
 __pycache__/
+
+# Supabase CLI local state
+backend/supabase/.temp/

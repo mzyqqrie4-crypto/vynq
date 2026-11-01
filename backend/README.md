@@ -15,7 +15,21 @@ npm test
 ```
 No Docker or Supabase account needed. The shim (`tests/supabase-shim.sql`) only recreates the roles, `auth.users` and `auth.uid()`; everything else is the real migration. Before release the same suite should also run against `supabase start` to catch differences.
 
-## Hosted project setup (once the project exists)
+## Live project
+`vynq`, ref `tvprnekvjvlmjefesvhu`, region ap-southeast-1 (Singapore). Migration applied, `delete-account` deployed, auth config pushed (6-digit code, 10 min, no confirmation step). The database password is in git-ignored `backend/.env.supabase`.
+
+**Blocked: real sign-in emails.** On the free plan the built-in sender only delivers to your own team's addresses, a few per hour, and Supabase refuses template changes, so the email carries a link instead of the 6-digit code. Fix: configure custom SMTP (Auth → SMTP settings), then uncomment the templates in `config.toml` and run `npx supabase config push`.
+
+## End-to-end smoke test (live project, sends no email)
+```bash
+cd backend
+keys=$(npx supabase projects api-keys --project-ref tvprnekvjvlmjefesvhu -o json)
+# pass the publishable key and the legacy service_role JWT via env for this one command only
+SUPABASE_URL=https://tvprnekvjvlmjefesvhu.supabase.co SUPABASE_ANON_KEY=… SUPABASE_SERVICE_ROLE_KEY=… node e2e/smoke.mjs
+```
+The admin API mints the sign-in code, so no mail is sent; test users delete themselves (and are force-deleted on failure).
+
+## Hosted project setup (reference)
 1. **Auth → Providers → Email:** enabled, "Confirm email" off, OTP length 6, expiry 600 s. Phone provider off. No social providers.
 2. **Auth → Email templates → Magic Link:** the body must contain `{{ .Token }}` (the 6-digit code), not only the link. The app asks for the code.
 3. **Auth → Rate limits:** keep the defaults or lower; OTP sends are also throttled to one per 60 s per address.
