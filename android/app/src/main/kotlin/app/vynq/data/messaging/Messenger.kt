@@ -304,14 +304,17 @@ class Messenger(
 
     // --- receiving ----------------------------------------------------------------------------
 
-    /** Fetches, decrypts and stores everything waiting for this device, then acknowledges it. */
-    suspend fun sync(): Int = locked {
-        var received = 0
+    /**
+     * Fetches, decrypts and stores everything waiting for this device, then
+     * acknowledges it. Returns the new incoming messages (for notifications).
+     */
+    suspend fun sync(): List<Message> = locked {
+        val received = mutableListOf<Message>()
         repeat(MAX_PAGES) {
             val rows = api.rpc("fetch_messages", buildJsonObject { put("p_device", deviceId); put("p_limit", PAGE) })
                 .jsonArray.map { it.jsonObject }
             if (rows.isEmpty()) return@locked received
-            for (r in rows) if (receive(r)) received++
+            for (r in rows) receive(r)?.let { if (!it.outgoing) received += it }
             api.rpc("ack_messages", buildJsonObject {
                 put("p_device", deviceId)
                 put("p_ids", buildJsonArray { rows.forEach { add(it["id"]!!.jsonPrimitive.long) } })
@@ -321,40 +324,40 @@ class Messenger(
         received
     }
 
-    /** True when a new message was stored. Anything unusable is dropped (and acknowledged). */
-    private suspend fun receive(r: JsonObject): Boolean {
-        val sender = r.str("from_user") ?: return false
-        val fromDevice = r.str("from_device") ?: return false
+    /** The message when a new one was stored. Anything unusable is dropped (and acknowledged). */
+    private suspend fun receive(r: JsonObject): Message? {
+        val sender = r.str("from_user") ?: return null
+        val fromDevice = r.str("from_device") ?: return null
         val envelope = Envelope(r["type"]!!.jsonPrimitive.int, unb64.decode(r.str("body")!!))
         val self = sender == userId
 
         if (!self && dao.contact(sender)?.state != ContactState.Accepted) {
             refreshContacts()
-            if (dao.contact(sender)?.state != ContactState.Accepted) return false
+            if (dao.contact(sender)?.state != ContactState.Accepted) return null
         }
         val device = dao.device(fromDevice)?.takeIf { it.active }
             ?: syncDevices(sender).firstOrNull { it.deviceId == fromDevice }
         if (device == null) {
             if (!self) withContext(io) { systemNote(sender, "A message from an unrecognised device of ${label(sender)} was discarded.") }
-            return false
+            return null
         }
         val claimed = crypto.senderIdentity(envelope)
         if (claimed != null && !claimed.serialize().contentEquals(device.identityKey)) {
             withContext(io) { systemNote(sender, KEY_MISMATCH_NOTE) }
-            return false
+            return null
         }
 
         val plain = try {
             withContext(io) { crypto.decrypt(fromDevice, envelope) }
         } catch (e: DuplicateMessageException) {
-            return false // already handled before an interrupted acknowledgement
+            return null // already handled before an interrupted acknowledgement
         } catch (e: Exception) {
             if (!self) withContext(io) { systemNote(sender, "A message from ${label(sender)} couldn't be decrypted.") }
-            return false
+            return null
         }
         val payload = runCatching { json.decodeFromString(WirePayload.serializer(), plain.decodeToString()) }.getOrNull()
-            ?: return false
-        if (payload.from != sender) return false
+            ?: return null
+        if (payload.from != sender) return null
 
         val kind = if (payload.attachment != null) MessageKind.Photo else MessageKind.Text
         val message = when {
@@ -362,9 +365,9 @@ class Messenger(
                 Message(payload.id, payload.syncPeer, true, kind, payload.text, payload.attachment, payload.sentAt, MessageStatus.Sent)
             !self ->
                 Message(payload.id, sender, false, kind, payload.text, payload.attachment, payload.sentAt, MessageStatus.Received, read = false)
-            else -> return false
+            else -> return null
         }
-        return withContext(io) { dao.insertMessage(message) }
+        return message.takeIf { withContext(io) { dao.insertMessage(message) } }
     }
 
     // --- attachments ----------------------------------------------------------------------------

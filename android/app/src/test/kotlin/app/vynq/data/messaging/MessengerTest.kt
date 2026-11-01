@@ -162,7 +162,7 @@ class MessengerTest {
         listOf("one", "two", "three").forEach { assertEquals(MessageStatus.Sent, a.messenger.sendText(bob, it).status) }
         assertEquals(3, server.mailbox.count { it.to == b.deviceId })   // waiting on the server
 
-        assertEquals(3, b.messenger.sync())                               // Bob comes online
+        assertEquals(3, b.messenger.sync().size)                          // Bob comes online
         assertEquals(listOf("one", "two", "three"), b.texts(alice))
         assertTrue(server.mailbox.isEmpty())                              // acknowledged and deleted
         assertEquals(3, b.dao.conversations().single().unread)

@@ -88,6 +88,13 @@ fun ChatScreen(peer: String, onBack: () -> Unit, onVerify: () -> Unit) {
         session?.let { s -> withContext(Dispatchers.IO) { s.dao.markRead(peer) } }
     }
     LaunchedEffect(session) { context.container.messaging.syncNow() }
+    // While this chat is on screen it doesn't notify, and its notification goes away.
+    androidx.compose.runtime.DisposableEffect(peer) {
+        val messaging = context.container.messaging
+        messaging.openChat.value = peer
+        messaging.notifier.cancelConversation(peer)
+        onDispose { if (messaging.openChat.value == peer) messaging.openChat.value = null }
+    }
 
     val pickPhoto = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val s = session ?: return@rememberLauncherForActivityResult

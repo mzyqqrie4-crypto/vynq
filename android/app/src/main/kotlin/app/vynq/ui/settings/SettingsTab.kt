@@ -126,13 +126,8 @@ fun SettingsTab(onOpen: (String) -> Unit) {
             RowDivider()
             ListRow(
                 "Notifications", icon = VynqIcons.Bell, iconTint = VynqPalette.Pink400,
-                subtitle = "Opens system settings",
-                onClick = {
-                    context.startActivity(
-                        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS)
-                            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName),
-                    )
-                },
+                subtitle = "Make sure messages arrive",
+                onClick = { onOpen(Routes.NOTIFICATIONS) },
             )
         }
 

@@ -1,5 +1,9 @@
 package app.vynq.ui
 
+import android.Manifest
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -19,6 +23,7 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import kotlinx.coroutines.flow.StateFlow
 import app.vynq.container
 import app.vynq.data.auth.AuthState
 import app.vynq.designsystem.theme.VynqTheme
@@ -31,6 +36,7 @@ import app.vynq.ui.settings.AboutScreen
 import app.vynq.ui.settings.AppearanceScreen
 import app.vynq.ui.settings.CallQualityScreen
 import app.vynq.ui.settings.NetworkDiagnosticsScreen
+import app.vynq.ui.settings.NotificationsScreen
 import app.vynq.ui.settings.PrivacyScreen
 import app.vynq.ui.welcome.WelcomeScreen
 
@@ -45,6 +51,7 @@ object Routes {
     const val NETWORK = "settings/network"
     const val PRIVACY = "settings/privacy"
     const val ABOUT = "settings/about"
+    const val NOTIFICATIONS = "settings/notifications"
     const val CHAT = "chat/{peer}"
     const val VERIFY = "chat/{peer}/verify"
     fun chat(peer: String) = "chat/$peer"
@@ -52,7 +59,7 @@ object Routes {
 }
 
 @Composable
-fun VynqNavHost(nav: NavHostController = rememberNavController()) {
+fun VynqNavHost(nav: NavHostController = rememberNavController(), openChat: StateFlow<String?>? = null, onChatOpened: () -> Unit = {}) {
     val container = LocalContext.current.container
     val authState by container.authRepository.state.collectAsStateWithLifecycle()
     // The system splash stays up while the stored session is read (MainActivity).
@@ -67,6 +74,15 @@ fun VynqNavHost(nav: NavHostController = rememberNavController()) {
         val signedIn = authState is AuthState.SignedIn
         if (wasSignedIn && !signedIn) nav.navigate(Routes.WELCOME) { popUpTo(0) }
         wasSignedIn = signedIn
+    }
+
+    // A tapped message notification opens that conversation.
+    val pendingChat = openChat?.collectAsStateWithLifecycle()?.value
+    LaunchedEffect(pendingChat, authState) {
+        if (pendingChat != null && authState is AuthState.SignedIn) {
+            nav.navigate(Routes.chat(pendingChat)) { launchSingleTop = true }
+            onChatOpened()
+        }
     }
 
     // Push/pop: a short slide with a fade. Reduced motion turns it into an instant cut.
@@ -100,6 +116,13 @@ fun VynqNavHost(nav: NavHostController = rememberNavController()) {
             UsernameScreen(onDone = { nav.navigate(Routes.MAIN) { popUpTo(0) } })
         }
         composable(Routes.MAIN) {
+            // Ask once per launch for notification permission (Android 13+); Android
+            // itself stops asking after the user declines twice.
+            val askNotifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+            LaunchedEffect(authState is AuthState.SignedIn) {
+                if (authState is AuthState.SignedIn && Build.VERSION.SDK_INT >= 33 &&
+                    !container.messaging.notifier.canPost()) askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
             // Covers an onboarding that was interrupted before a username was chosen.
             // (Device registration and key upload run in MessagingService.)
             if (authState is AuthState.SignedIn) {
@@ -118,6 +141,7 @@ fun VynqNavHost(nav: NavHostController = rememberNavController()) {
         composable(Routes.NETWORK) { NetworkDiagnosticsScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.PRIVACY) { PrivacyScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.ABOUT) { AboutScreen(onBack = { nav.popBackStack() }) }
+        composable(Routes.NOTIFICATIONS) { NotificationsScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.CHAT) { entry ->
             val peer = entry.arguments?.getString("peer").orEmpty()
             ChatScreen(peer, onBack = { nav.popBackStack() }, onVerify = { nav.navigate(Routes.verify(peer)) })

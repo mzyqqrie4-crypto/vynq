@@ -48,7 +48,7 @@ class AppContainer(context: Context) {
     val accountRepository: AccountRepository = accounts
 
     /** End-to-end encrypted messaging for whoever is signed in on this device. */
-    val messaging = MessagingService(context, accounts, accounts, accounts, appScope)
+    val messaging = MessagingService(context, accounts, accounts, accounts, preferences, appScope)
         .also { if (backendConfigured) it.attach() }
 }
 

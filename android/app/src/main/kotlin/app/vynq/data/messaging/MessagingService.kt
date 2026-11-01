@@ -8,6 +8,9 @@ import app.vynq.data.auth.AccountRepository
 import app.vynq.data.auth.AuthRepository
 import app.vynq.data.auth.AuthState
 import app.vynq.data.auth.BackendApi
+import app.vynq.data.prefs.PreferencesRepository
+import app.vynq.notify.BackgroundDelivery
+import app.vynq.notify.Notifier
 import java.io.File
 import java.security.MessageDigest
 import kotlinx.coroutines.CoroutineScope
@@ -17,8 +20,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** Messaging for the signed-in account on this device, or nothing when signed out. */
@@ -27,41 +33,66 @@ class MessagingSession(val messenger: Messenger, val dao: MessagingDao, val user
 /**
  * Opens the encrypted store and starts messaging when someone signs in, and
  * wipes all local messaging data when they sign out (the next sign-in is a
- * new device). While the app is visible it listens for new mail.
+ * new device).
+ *
+ * Delivery: while the app is visible, or while the background connection
+ * service runs, it listens on Realtime for new mail. Otherwise a periodic job
+ * fetches it. New messages are notified locally after decryption.
  */
 class MessagingService(
     private val context: Context,
     private val auth: AuthRepository,
     private val account: AccountRepository,
     private val api: BackendApi,
+    private val prefs: PreferencesRepository,
     private val scope: CoroutineScope,
 ) {
+    val notifier = Notifier(context)
+
     private val _session = MutableStateFlow<MessagingSession?>(null)
     val session: StateFlow<MessagingSession?> = _session.asStateFlow()
 
-    /** True while the first key upload / sync is running or last failed. */
-    private val _syncing = MutableStateFlow(false)
-    val syncing: StateFlow<Boolean> = _syncing.asStateFlow()
+    /** The conversation on screen right now; it doesn't get notifications. */
+    val openChat = MutableStateFlow<String?>(null)
 
     private var realtime: RealtimeMailbox? = null
+    private val syncLock = Mutex()
     private var syncJob: Job? = null
-    private var foreground = false
+    @Volatile private var foreground = false
+    @Volatile private var keepAlive = false
+    private var ready: Job? = null
 
     fun attach() {
         scope.launch {
             auth.state.map { (it as? AuthState.SignedIn)?.userId }.distinctUntilChanged().collect { userId ->
                 close()
                 if (userId == null) {
-                    if (auth.state.value is AuthState.SignedOut) withContext(Dispatchers.IO) { wipe(context, keep = null) }
+                    if (auth.state.value is AuthState.SignedOut) {
+                        notifier.cancelAll()
+                        BackgroundDelivery.stop(context)
+                        withContext(Dispatchers.IO) { wipe(context, keep = null) }
+                    }
                 } else {
                     open(userId)
                 }
             }
         }
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStart(owner: LifecycleOwner) { foreground = true; realtime?.start(); syncNow() }
-            override fun onStop(owner: LifecycleOwner) { foreground = false; realtime?.stop() }
+            override fun onStart(owner: LifecycleOwner) {
+                foreground = true
+                updateRealtime()
+                syncNow()
+                scope.launch { BackgroundDelivery.ensure(context, prefs.backgroundConnection.first(), _session.value != null) }
+            }
+            override fun onStop(owner: LifecycleOwner) { foreground = false; updateRealtime() }
         })
+    }
+
+    /** Called by the background connection service while it runs. */
+    fun setKeepAlive(on: Boolean) { keepAlive = on; updateRealtime() }
+
+    private fun updateRealtime() {
+        if (foreground || keepAlive) realtime?.start() else realtime?.stop()
     }
 
     private suspend fun open(userId: String) {
@@ -73,33 +104,63 @@ class MessagingService(
         val messenger = Messenger(api, dao, userId, FileAttachmentCache(attachmentsDir(context, deviceId)))
         _session.value = MessagingSession(messenger, dao, userId)
         realtime = RealtimeMailbox(api.realtimeUrl, deviceId, auth::accessToken, scope, onMail = ::syncNow)
-            .also { if (foreground) it.start() }
-        scope.launch {
-            _syncing.value = true
+        updateRealtime()
+        BackgroundDelivery.ensure(context, prefs.backgroundConnection.first(), signedIn = true)
+        ready = scope.launch {
             runCatching {
                 account.registerThisDevice().getOrThrow()  // keys can only be published for a registered device
                 messenger.start()
                 messenger.refreshContacts()
-                messenger.sync()
             }
-            _syncing.value = false
         }
+        syncNow()
     }
 
     private fun close() {
         realtime?.stop(); realtime = null
         syncJob?.cancel(); syncJob = null
+        ready?.cancel(); ready = null
         _session.value = null
     }
 
-    /** Fetch now (coalesced: one sync at a time, one queued). */
+    /** Fetch now; calls coalesce so at most one sync runs and one waits. */
     fun syncNow() {
-        val s = _session.value ?: return
-        if (syncJob?.isActive == true) {
-            scope.launch { syncJob?.join(); runCatching { s.messenger.sync() } }
+        if (_session.value == null) return
+        if (syncLock.isLocked && syncJob?.isActive == true) {
+            scope.launch { syncJob?.join(); syncOnce() }
             return
         }
-        syncJob = scope.launch { runCatching { s.messenger.refreshContacts(); s.messenger.sync() } }
+        syncJob = scope.launch { syncOnce() }
+    }
+
+    /** One fetch-decrypt-notify pass. Used by the app, the service and the periodic job. */
+    suspend fun syncOnce(): Boolean = syncLock.withLock {
+        val s = _session.value ?: return false
+        ready?.join()
+        val received = runCatching { s.messenger.sync() }.getOrElse { return false }
+        if (received.isNotEmpty()) {
+            runCatching { s.messenger.refreshContacts() }
+            notify(s, received.map { it.peer }.toSet())
+        }
+        true
+    }
+
+    /** Waits until the stored session has been read and messaging opened (or not, if signed out). */
+    suspend fun awaitSession(): MessagingSession? {
+        if (auth.state.value is AuthState.Loading) auth.state.first { it !is AuthState.Loading }
+        if (auth.state.value !is AuthState.SignedIn) return null
+        return _session.first { it != null }
+    }
+
+    private suspend fun notify(s: MessagingSession, peers: Set<String>) {
+        val preview = prefs.notificationPreview.first()
+        for (peer in peers) {
+            if (foreground && openChat.value == peer) continue
+            val unread = withContext(Dispatchers.IO) {
+                s.dao.messages(peer).filter { !it.outgoing && !it.read && it.kind != MessageKind.System }
+            }
+            notifier.showConversation(s.dao.contact(peer), peer, unread, preview)
+        }
     }
 
     companion object {
