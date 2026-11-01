@@ -84,7 +84,12 @@ class SupabaseAuthRepository(
 
     override suspend fun forgetSession() {
         session = null
-        withContext(io) { store.clear() }
+        withContext(io) {
+            store.clear()
+            // The old id stays bound to the old account on the server, so the
+            // next sign-in (possibly someone else) registers as a new device.
+            device.reset()
+        }
         publish()
     }
 

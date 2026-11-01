@@ -19,8 +19,10 @@ class SupabaseAuthRepositoryTest {
     private var now = 1_000_000L
 
     private val device = object : DeviceIdentity {
-        override val id = "6f1f2c1e-0000-4000-8000-000000000001"
+        var generation = 1
+        override val id get() = "6f1f2c1e-0000-4000-8000-00000000000$generation"
         override val name = "Test Phone"
+        override fun reset() { generation++ }
     }
 
     @Before fun start() = server.start()
@@ -150,6 +152,27 @@ class SupabaseAuthRepositoryTest {
         assertEquals("Bearer access-1", req.headers["Authorization"])
         assertNull(store.session)
         assertEquals(AuthState.SignedOut, repo.state.value)
+    }
+
+    @Test fun `after sign-out the next account registers as a new device`() = runTest {
+        store.session = Session("access-1", "refresh-1", now + 3600, "user-1", "alice@example.test")
+        server.enqueue(json(200, ""))   // register as alice
+        server.enqueue(json(204, ""))   // logout
+        server.enqueue(json(200, tokenBody(access = "access-b").replace("user-1", "user-2")))
+        server.enqueue(json(200, ""))   // register as bob
+        val repo = repo(StandardTestDispatcher(testScheduler))
+        repo.restore()
+
+        repo.registerThisDevice()
+        val firstId = device.id
+        repo.signOut()
+        repo.verifyEmailCode("bob@example.test", "123456")
+        repo.registerThisDevice()
+
+        val bodies = List(4) { server.takeRequest().body?.utf8().orEmpty() }
+        assertTrue(bodies[0].contains(firstId))
+        assertTrue(bodies[3].contains(device.id))
+        assertTrue(firstId != device.id)
     }
 
     @Test fun `deleting the account clears the session`() = runTest {
