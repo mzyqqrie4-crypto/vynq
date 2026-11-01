@@ -1,0 +1,353 @@
+package app.vynq.call
+
+import android.content.Context
+import android.content.Intent
+import app.vynq.data.auth.BackendApi
+import app.vynq.data.messaging.CallSignal
+import app.vynq.data.messaging.MessagingService
+import com.twilio.audioswitch.AudioDevice
+import io.livekit.android.LiveKit
+import io.livekit.android.RoomOptions
+import io.livekit.android.audio.AudioSwitchHandler
+import io.livekit.android.e2ee.BaseKeyProvider
+import io.livekit.android.e2ee.E2EEOptions
+import io.livekit.android.e2ee.E2EEState
+import io.livekit.android.events.RoomEvent
+import io.livekit.android.room.Room
+import io.livekit.android.room.track.LocalVideoTrack
+import io.livekit.android.room.track.Track
+import io.livekit.android.room.track.VideoTrack
+import java.security.SecureRandom
+import java.util.Base64
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+
+enum class CallPhase { Ringing, Connecting, Connected, Reconnecting, Ended }
+
+data class CallState(
+    val callId: String,
+    val peer: String,
+    val peerLabel: String,
+    val outgoing: Boolean,
+    val video: Boolean,
+    val phase: CallPhase,
+    val muted: Boolean = false,
+    val cameraOn: Boolean = video,
+    val speaker: Boolean = video,
+    /** True only while every encrypted track (ours and theirs) reports an active key. */
+    val endToEnd: Boolean = false,
+    val connectedAt: Long? = null,
+    val endReason: String? = null,
+    val localVideo: VideoTrack? = null,
+    val remoteVideo: VideoTrack? = null,
+)
+
+/**
+ * One 1:1 call at a time over LiveKit.
+ *
+ * Signalling (invite, answer, decline, end) goes end-to-end encrypted over the
+ * Signal channel. The invite carries a fresh random media key; both phones
+ * give it to LiveKit's frame encryption, so the LiveKit server forwards
+ * frames it can't decrypt. The UI says "end-to-end encrypted" only while
+ * every track reports an active key; otherwise "encrypted in transit".
+ */
+class CallManager(
+    private val context: Context,
+    private val api: BackendApi,
+    private val messaging: MessagingService,
+    private val scope: CoroutineScope,
+) {
+    private val _state = MutableStateFlow<CallState?>(null)
+    val state: StateFlow<CallState?> = _state.asStateFlow()
+
+    val notifier = CallNotifier(context)
+    private var room: Room? = null
+    private var callKey: String? = null
+    private var roomJob: Job? = null
+    private var timeout: Job? = null
+    private val trackE2ee = mutableMapOf<String, E2EEState>()
+
+    init {
+        LiveKit.init(context)
+    }
+
+    /** Wire signals from the messenger (call once per messaging session). */
+    fun onSignal(s: CallSignal) {
+        scope.launch { handle(s) }
+    }
+
+    // --- outgoing ---------------------------------------------------------------------------------
+
+    suspend fun startCall(peer: String, video: Boolean): Result<Unit> = runCatching {
+        check(_state.value == null) { "Already in a call." }
+        val session = messaging.session.value ?: error("Not signed in.")
+        val callId = api.rpc("create_call", buildJsonObject { put("p_callee", peer); put("p_video", video) })
+            .jsonPrimitive.content
+        val key = newKey()
+        callKey = key
+        _state.value = CallState(callId, peer, session.messenger.contactLabel(peer), outgoing = true, video = video, phase = CallPhase.Ringing)
+        val reached = session.messenger.sendCallSignal(peer, CallSignal.INVITE, callId, video = video, callKey = key)
+        if (reached == 0) {
+            end("They haven't set up vynq on a phone yet.", notifyPeer = false)
+            error("They haven't set up vynq on a phone yet.")
+        }
+        CallService.start(context, video)
+        connect(callId, key, video)
+        armTimeout(callId, RING_TIMEOUT_MS) { end("No answer", notifyPeer = true, note = if (video) "Video call · no answer" else "Voice call · no answer") }
+    }
+
+    // --- incoming ---------------------------------------------------------------------------------
+
+    private suspend fun handle(s: CallSignal) {
+        val current = _state.value
+        when (s.type) {
+            CallSignal.INVITE -> {
+                if (s.self || s.callKey == null) return
+                if (System.currentTimeMillis() - s.sentAt > RING_TIMEOUT_MS) {
+                    note(s.from, if (s.video) "Missed video call" else "Missed voice call"); return
+                }
+                if (current != null) {
+                    messaging.session.value?.messenger?.sendCallSignal(s.from, CallSignal.DECLINE, s.callId, reason = "busy")
+                    note(s.from, if (s.video) "Missed video call (you were on another call)" else "Missed voice call (you were on another call)")
+                    return
+                }
+                callKey = s.callKey
+                val label = messaging.session.value?.messenger?.contactLabel(s.from) ?: "Someone"
+                _state.value = CallState(s.callId, s.from, label, outgoing = false, video = s.video, phase = CallPhase.Ringing)
+                notifier.showIncoming(s.callId, label, s.video)
+                armTimeout(s.callId, RING_TIMEOUT_MS) {
+                    note(s.from, if (s.video) "Missed video call" else "Missed voice call")
+                    clear()
+                }
+            }
+            CallSignal.ANSWER -> if (current?.callId == s.callId) {
+                if (s.self) { clear("Answered on another phone") }   // our other phone took it
+                else timeout?.cancel()                                // they answered; media joins in the room
+            }
+            CallSignal.DECLINE -> if (current?.callId == s.callId) {
+                when {
+                    s.self -> clear("Declined on another phone")
+                    s.reason == "busy" -> end("Busy", notifyPeer = false, note = "Call · they were busy")
+                    else -> end("Declined", notifyPeer = false, note = if (current.video) "Video call · declined" else "Voice call · declined")
+                }
+            }
+            CallSignal.END -> if (current?.callId == s.callId) {
+                val note = if (current.phase == CallPhase.Ringing && !current.outgoing) {
+                    if (current.video) "Missed video call" else "Missed voice call"
+                } else summary(current)
+                end("Call ended", notifyPeer = false, note = note)
+            }
+        }
+    }
+
+    /** The user answered (from the call screen, which holds camera/mic permission by now). */
+    fun accept() {
+        val s = _state.value ?: return
+        if (s.outgoing || s.phase != CallPhase.Ringing) return
+        timeout?.cancel()
+        notifier.cancelIncoming()
+        _state.update { it?.copy(phase = CallPhase.Connecting) }
+        scope.launch {
+            val m = messaging.session.value?.messenger
+            runCatching { m?.sendCallSignal(s.peer, CallSignal.ANSWER, s.callId, alsoMine = true) }
+            runCatching { api.rpc("update_call", buildJsonObject { put("p_call", s.callId); put("p_state", "answered") }) }
+            CallService.start(context, s.video)
+            connect(s.callId, callKey ?: return@launch end("Missing call key", notifyPeer = true), s.video)
+        }
+    }
+
+    fun decline() {
+        val s = _state.value ?: return
+        scope.launch {
+            runCatching { messaging.session.value?.messenger?.sendCallSignal(s.peer, CallSignal.DECLINE, s.callId, alsoMine = true) }
+            note(s.peer, if (s.video) "Declined video call" else "Declined voice call")
+            clear()
+        }
+    }
+
+    fun hangUp() {
+        val s = _state.value ?: return
+        scope.launch { end("Call ended", notifyPeer = true, note = summary(s)) }
+    }
+
+    // --- in-call controls ---------------------------------------------------------------------------
+
+    fun toggleMute() {
+        val s = _state.value ?: return
+        scope.launch { room?.localParticipant?.setMicrophoneEnabled(s.muted) }
+        _state.update { it?.copy(muted = !s.muted) }
+    }
+
+    fun toggleCamera() {
+        val s = _state.value ?: return
+        scope.launch {
+            room?.localParticipant?.setCameraEnabled(!s.cameraOn)
+            _state.update { it?.copy(cameraOn = !s.cameraOn, localVideo = if (!s.cameraOn) localVideoTrack() else null) }
+        }
+    }
+
+    fun switchCamera() {
+        localVideoTrack()?.switchCamera()
+    }
+
+    fun toggleSpeaker() {
+        val s = _state.value ?: return
+        val audio = room?.audioHandler as? AudioSwitchHandler ?: return
+        val target = audio.availableAudioDevices.firstOrNull {
+            if (s.speaker) it is AudioDevice.Earpiece || it is AudioDevice.BluetoothHeadset || it is AudioDevice.WiredHeadset
+            else it is AudioDevice.Speakerphone
+        } ?: return
+        audio.selectDevice(target)
+        _state.update { it?.copy(speaker = target is AudioDevice.Speakerphone) }
+    }
+
+    fun room(): Room? = room
+
+    // --- media ---------------------------------------------------------------------------------------
+
+    private suspend fun connect(callId: String, key: String, video: Boolean) {
+        val creds = runCatching {
+            api.function("livekit-token", buildJsonObject { put("call_id", callId); put("device_id", api.deviceId) }).jsonObject
+        }.getOrElse {
+            end("Couldn't reach the call server.", notifyPeer = true); return
+        }
+        val url = creds["url"]?.jsonPrimitive?.content ?: return end("Calls aren't set up on the server yet.", notifyPeer = true)
+        val token = creds["token"]?.jsonPrimitive?.content ?: return end("Calls aren't set up on the server yet.", notifyPeer = true)
+
+        val keyProvider = BaseKeyProvider().apply { setSharedKey(key, null) }
+        val r = LiveKit.create(
+            context,
+            // Frame encryption (AES-GCM, LiveKit's default) with the key from the Signal invite.
+            RoomOptions(adaptiveStream = true, dynacast = true, e2eeOptions = E2EEOptions(keyProvider = keyProvider)),
+        )
+        room = r
+        // Headsets first; then speaker for video, earpiece for voice.
+        (r.audioHandler as? AudioSwitchHandler)?.preferredDeviceList =
+            if (video) listOf(AudioDevice.BluetoothHeadset::class.java, AudioDevice.WiredHeadset::class.java, AudioDevice.Speakerphone::class.java, AudioDevice.Earpiece::class.java)
+            else listOf(AudioDevice.BluetoothHeadset::class.java, AudioDevice.WiredHeadset::class.java, AudioDevice.Earpiece::class.java, AudioDevice.Speakerphone::class.java)
+        roomJob = scope.launch { r.events.events.collect { onRoomEvent(it) } }
+        try {
+            r.connect(url, token)
+            r.localParticipant.setMicrophoneEnabled(true)
+            if (video) {
+                r.localParticipant.setCameraEnabled(true)
+                _state.update { it?.copy(localVideo = localVideoTrack()) }
+            }
+            if (_state.value?.outgoing == false) _state.update { it?.copy(phase = CallPhase.Connecting) }
+        } catch (e: Exception) {
+            end("Couldn't connect the call.", notifyPeer = true)
+        }
+    }
+
+    private fun onRoomEvent(e: RoomEvent) {
+        when (e) {
+            is RoomEvent.TrackSubscribed -> {
+                val track = e.track
+                if (track is VideoTrack) _state.update { it?.copy(remoteVideo = track) }
+                markConnected()
+            }
+            is RoomEvent.ParticipantConnected -> markConnected()
+            is RoomEvent.TrackUnsubscribed -> if (e.track is VideoTrack) _state.update { it?.copy(remoteVideo = null) }
+            is RoomEvent.TrackE2EEStateEvent -> {
+                trackE2ee[e.track.sid.toString()] = e.state
+                val ok = trackE2ee.isNotEmpty() && trackE2ee.values.all { it == E2EEState.OK || it == E2EEState.KEY_RATCHETED }
+                _state.update { it?.copy(endToEnd = ok) }
+            }
+            is RoomEvent.Reconnecting -> _state.update { it?.copy(phase = CallPhase.Reconnecting) }
+            is RoomEvent.Reconnected -> _state.update { it?.copy(phase = if (it.connectedAt != null) CallPhase.Connected else CallPhase.Connecting) }
+            is RoomEvent.ParticipantDisconnected -> {
+                // The other phone left the room: give it a moment (network switch), then end.
+                val s = _state.value ?: return
+                scope.launch {
+                    delay(PEER_GRACE_MS)
+                    if (_state.value?.callId == s.callId && room?.remoteParticipants.isNullOrEmpty()) {
+                        end("Call ended", notifyPeer = false, note = summary(_state.value ?: s))
+                    }
+                }
+            }
+            is RoomEvent.Disconnected -> {
+                val s = _state.value ?: return
+                if (s.phase != CallPhase.Ended) scope.launch { end("Connection lost", notifyPeer = true, note = summary(s)) }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun markConnected() {
+        timeout?.cancel()
+        _state.update {
+            if (it == null || it.phase == CallPhase.Connected) it
+            else it.copy(phase = CallPhase.Connected, connectedAt = it.connectedAt ?: System.currentTimeMillis())
+        }
+        CallService.update(context)
+    }
+
+    private fun localVideoTrack(): LocalVideoTrack? =
+        room?.localParticipant?.getTrackPublication(Track.Source.CAMERA)?.track as? LocalVideoTrack
+
+    // --- teardown --------------------------------------------------------------------------------------
+
+    private suspend fun end(reason: String, notifyPeer: Boolean, note: String? = null) {
+        val s = _state.value ?: return
+        if (notifyPeer) runCatching { messaging.session.value?.messenger?.sendCallSignal(s.peer, CallSignal.END, s.callId) }
+        runCatching { api.rpc("update_call", buildJsonObject { put("p_call", s.callId); put("p_state", "ended") }) }
+        note?.let { note(s.peer, it) }
+        clear(reason)
+    }
+
+    /** Releases everything: room, camera, microphone, service, notifications. */
+    private fun clear(reason: String? = null) {
+        timeout?.cancel(); timeout = null
+        roomJob?.cancel(); roomJob = null
+        room?.let { r -> runCatching { r.disconnect() }; runCatching { r.release() } }
+        room = null
+        callKey = null
+        trackE2ee.clear()
+        notifier.cancelIncoming()
+        CallService.stop(context)
+        _state.update { it?.copy(phase = CallPhase.Ended, endReason = reason, localVideo = null, remoteVideo = null) }
+        scope.launch { delay(1_500); if (_state.value?.phase == CallPhase.Ended) _state.value = null }
+    }
+
+    private fun armTimeout(callId: String, ms: Long, onTimeout: suspend () -> Unit) {
+        timeout?.cancel()
+        timeout = scope.launch {
+            delay(ms)
+            if (_state.value?.callId == callId && _state.value?.phase == CallPhase.Ringing) onTimeout()
+        }
+    }
+
+    private fun note(peer: String, text: String) {
+        val m = messaging.session.value?.messenger ?: return
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) { m.callNote(peer, text) }
+    }
+
+    private fun summary(s: CallState): String {
+        val kind = if (s.video) "Video call" else "Voice call"
+        val start = s.connectedAt ?: return "$kind · not connected"
+        val secs = (System.currentTimeMillis() - start) / 1000
+        return "$kind · %d:%02d".format(secs / 60, secs % 60)
+    }
+
+    private fun newKey(): String =
+        Base64.getEncoder().encodeToString(ByteArray(32).also(SecureRandom()::nextBytes))
+
+    companion object {
+        const val RING_TIMEOUT_MS = 45_000L
+        private const val PEER_GRACE_MS = 15_000L
+
+        fun callIntent(context: Context, action: String? = null): Intent =
+            Intent(context, CallActivity::class.java).setAction(action ?: CallActivity.ACTION_SHOW)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+    }
+}

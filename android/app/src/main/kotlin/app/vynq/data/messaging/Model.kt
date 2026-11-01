@@ -88,7 +88,14 @@ data class CallSignal(
     val callKey: String? = null,
     val reason: String? = null,
     val sentAt: Long,
-)
+) {
+    companion object {
+        const val INVITE = "call_invite"
+        const val ANSWER = "call_answer"
+        const val DECLINE = "call_decline"
+        const val END = "call_end"
+    }
+}
 
 /** One message in the account's encrypted history (see HistoryCrypto). */
 @Serializable
