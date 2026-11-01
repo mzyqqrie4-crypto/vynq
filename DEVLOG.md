@@ -1,5 +1,32 @@
 # vynq development log
 
+## 2026-11-01: Phase 3 — end-to-end encrypted messaging (branch `phase3/messaging`)
+
+**Implemented**
+- Backend migration `20261102000000_messaging.sql`: contacts (request by exact username, accept, remove), per-device Signal keys (identity key immutable; signed, Kyber-1024 last-resort and one-time pre-keys; one-time keys popped atomically), ciphertext-only mailbox written/read only through RPCs that check device ownership and accepted-contact state, 30-day expiry, delete on acknowledgement, Realtime publication, private `attachments` bucket readable only by the sender's contacts. `delete-account` now also purges the user's attachments.
+- Android: libsignal 0.105.0 (from Signal's own Maven repo, scoped to `org.signal`): PQXDH + Double Ratchet, each device addressed separately with its identity key pinned on first use; plaintext padded to 160-byte blocks; 60-digit safety numbers. Attachments: per-file AES-256-GCM key + SHA-256 digest inside the Signal message; photos re-encoded first so EXIF/location never leaves the phone. One SQLCipher database per device, key wrapped by the Android Keystore, wiped on sign-out.
+- Screens: Contacts (add/accept/decline/cancel), Chats (real conversations, unread counts), chat (text, photos, retry, encrypted/verified status), safety number screen (mark verified; a new device for a contact clears it and adds a notice).
+- **Notifications without Google push** (owner request, for phones with China ROMs): local notifications after on-device decryption, lock screen shows only "New message", preview setting; a foreground service keeps the Realtime connection (on by default, can be hidden or turned off), a 15-minute WorkManager safety net, restart after reboot/update; Settings → Notifications checklist with links to Xiaomi/OPPO/realme/OnePlus/vivo/Huawei/Honor autostart and battery screens. See docs/01-architecture.md §7.
+- APK size: libsignal's desktop natives and test library excluded, native symbols stripped (NDK 29), arm64 only: 639 MB → 47 MB debug.
+
+**Tested (executed)**
+- Backend: 48/48 policy tests (23 new). Live: `backend/e2e/messaging-smoke.mjs` 7/7 on the real project (contacts, bundle popping, exact mailbox bytes, storage: contact can read / stranger and anon can't / can't write into another user's folder, Realtime notification, deletion purges attachments and contacts).
+- Android: 55/55 JVM tests, including 15 crypto tests and 11 two-phone scenarios that run the real libsignal (desktop build, Java 21): offline queue, replay and tamper rejection, forged pre-key refused, swapped identity key refused, new-device warning, sync to own devices, duplicate delivery, photo integrity, key top-up.
+- Real phones (Xiaomi 17 Pro @mzyqqrie ↔ realme 14x 5G @zyqqrie2, Wi-Fi debugging):
+  - Contact request and accept; text both ways; photo delivered; safety numbers matched on both phones and were marked verified (owner confirmed).
+  - **Offline then online:** vynq force-stopped on the realme, message sent from the Xiaomi. The server held one 266-byte type-2 envelope; none of the message's words appeared in the bytes (**ciphertext only, verified by query**). Opening the realme fetched, decrypted and cleared it within seconds. (A first attempt didn't count: the realme was reopened 40 s after being closed.)
+  - **Notifications with vynq in the background and the screen off:** Xiaomi (HyperOS CN) and realme (ColorOS) both showed the message notification. On the Xiaomi this needed notification permission, Autostart and battery "No restrictions"; before Autostart was allowed, HyperOS blocked the post-update restart.
+  - Both phones have Google Play services, so "no Google services at all" wasn't tested on a device. vynq doesn't use them either way.
+
+**Not verified / known gaps**
+- New-device warning on real phones (unit-tested only so far).
+- Battery cost of the background connection: not measured.
+- After the phone kills vynq (e.g. swiped away on HyperOS), messages wait until the periodic job or next app start; calls will need a decision on FCM / vendor push (architecture §7, open decision).
+- The server sees who messages whom and when (no sealed sender yet), and the OS sees notification text if previews are on.
+- New-device approval from an existing device (threat model T4) isn't built; contacts are warned instead.
+- Unit tests now need Java 21 (CI installs it; locally a portable Temurin 21 is configured in the user's Gradle settings).
+
+
 ## 2026-11-01: Phase 2 complete — accounts
 
 **Last check: account deletion from the app.** The owner deleted @test from Settings on the realme. The phone's session file and device id were wiped and it returned to Welcome. Server afterwards: 1 user, 1 profile, 1 device. @test's profile and device were removed by the cascade; @mzyqqrie and the Xiaomi untouched.
