@@ -425,8 +425,10 @@ class CallManager(
 
     /**
      * 1440p that this phone can't actually keep at a smooth frame rate looks worse than
-     * 1080p: if it sends under 22 fps for 6 s for a reason other than the network, step
-     * the camera down to 1080p for the rest of the call.
+     * 1080p. Step the camera down to 1080p for the rest of the call when WebRTC says the
+     * processor is the limit for about 8 s, or the camera stays under 22 fps for 20 s for any
+     * reason but the network. Ignored while the camera is off (a muted camera sends
+     * almost nothing by design).
      */
     private fun watchQhd(r: Room) {
         qhdWatch?.cancel()
@@ -436,8 +438,13 @@ class CallManager(
             var slow = 0
             while (isActive && room === r) {
                 val (fps, limit) = sampler.sending()
-                slow = if (fps != null && fps < 22 && limit != "bandwidth") slow + 1 else 0
-                if (slow >= 3) {
+                val cameraOn = _state.value?.cameraOn == true
+                slow = when {
+                    !cameraOn || fps == null || fps >= 22 || limit == "bandwidth" -> 0
+                    limit == "cpu" -> slow + 3
+                    else -> slow + 1
+                }
+                if (slow >= 10) {
                     val track = localVideoTrack()
                     (track?.capturer as? CameraVideoCapturer)?.changeCaptureFormat(1920, 1080, 30)
                     Log.i(TAG, "1440p too slow here (${fps?.toInt()} fps, limit $limit): stepped down to 1080p")
@@ -539,6 +546,8 @@ data class CallProfile(
         }
 
         /** Maximum, when both phones allow it (VideoSize.send1440). */
-        val Qhd = CallProfile(VideoCaptureParameter(2560, 1440, 30), VideoEncoding(12_000_000, 30), KeepSharp)
+        // Balanced: on a slow or lossy network WebRTC sends fewer pixels rather than a
+        // blocky 1440p, and goes back up when the bandwidth returns.
+        val Qhd = CallProfile(VideoCaptureParameter(2560, 1440, 30), VideoEncoding(12_000_000, 30), Balanced)
     }
 }
