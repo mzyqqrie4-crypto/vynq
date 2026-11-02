@@ -1,5 +1,15 @@
 # vynq development log
 
+## 2026-11-02: 0.6.1 — texts failed in the 0.6.0 release build (fixed)
+
+**Bug:** in the published 0.6.0, every text failed on both phones (the debug app was fine). The release shrinker (R8) renamed libsignal's `NativeHandleGuard$Owner`, so libsignal's adapter method became `loadSession(J)Luv1;` while its native code looks up `loadSession(J)Lorg/signal/libsignal/internal/NativeHandleGuard$Owner;` → `JNI error Method not found`, caught silently and shown as a failed text. libsignal's bundled rules keep those store types' names only when otherwise unreferenced.
+
+**Fix:** release builds are no longer shrunk at all (owner decision: release must run the same code as the tested debug build; APK ~60 MB instead of ~30 MB). The libsignal keep rules stay in `proguard-rules.pro` in case shrinking returns. First fix tried: `proguard-rules.pro` keeps libsignal whole (classes, interfaces, and members of classes implementing its interfaces); +0.5 MB. Verified in the shrunk bytecode (signature now matches) and on the Xiaomi: a text from the shrunk build went out (no failure; the server held the new pre-key messages for the recipient's and the sender's other devices).
+
+**Also:** a failed send now logs its reason (`vynq.msg`, error type and message only, never the text); a `staging` build type (release code, `.staging` package, public debug key) for reproducing release-only bugs; test builds are labelled "vynq debug" / "vynq staging" on the home screen (all three were "vynq" before, which made testing ambiguous). 79/79 JVM tests.
+
+**Not verified:** receiving on a phone running the fixed build (the realme still had 0.6.0), calls in the release build.
+
 ## 2026-11-02: Sharing vynq from GitHub Releases (branch `release/github-download`)
 
 Owner request: let others download the Android app from the GitHub repository (owner decision: make the repository public).
