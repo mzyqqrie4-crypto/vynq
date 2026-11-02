@@ -298,7 +298,7 @@ class CallManager(
                     // H.264 runs on the phone's hardware encoder; LiveKit's default VP8 is usually
                     // software on Android and drops resolution at 1080p.
                     videoCodec = VideoCodec.H264.codecName,   // set per call by VideoCodecs.choose
-                    degradationPreference = profile.degradation,
+                    degradationPreference = CallProfile.Degradation,
                 ),
             ),
         )
@@ -413,7 +413,7 @@ class CallManager(
         if (qhd) {
             r.videoTrackCaptureDefaults = r.videoTrackCaptureDefaults.copy(captureParams = CallProfile.Qhd.capture)
             r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(
-                videoEncoding = CallProfile.Qhd.encoding, degradationPreference = CallProfile.Qhd.degradation)
+                videoEncoding = CallProfile.Qhd.encoding)
         }
         r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(videoCodec = codec)
         val ok = runCatching { r.localParticipant.setCameraEnabled(true) }.getOrDefault(false)
@@ -525,29 +525,23 @@ class CallManager(
 
 /**
  * What a call sends for each Settings → Call quality choice. The encoder still
- * lowers resolution and bitrate on its own when the network can't keep up.
+ * lowers resolution and bitrate on its own when the network can't keep up
+ * (BALANCED: fewer pixels and a few fewer frames, never a 1-4 fps slideshow at
+ * full size), and goes back up when the bandwidth returns.
  * (Phase 5 measures these against real networks and tunes them.)
  */
-data class CallProfile(
-    val capture: VideoCaptureParameter,
-    val encoding: VideoEncoding,
-    /** What gives way when the network or encoder can't keep up: sharpness or smoothness. */
-    val degradation: RtpParameters.DegradationPreference,
-) {
+data class CallProfile(val capture: VideoCaptureParameter, val encoding: VideoEncoding) {
     companion object {
-        private val Balanced = RtpParameters.DegradationPreference.BALANCED
-        private val KeepSharp = RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
+        val Degradation = RtpParameters.DegradationPreference.BALANCED
 
         fun of(q: CallQuality): CallProfile = when (q) {
-            CallQuality.DataSaver -> CallProfile(VideoCaptureParameter(640, 360, 24), VideoEncoding(500_000, 24), Balanced)
-            CallQuality.Automatic -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(3_500_000, 30), Balanced)
-            CallQuality.High -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(5_000_000, 30), KeepSharp)
-            CallQuality.Maximum -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(8_000_000, 30), KeepSharp)
+            CallQuality.DataSaver -> CallProfile(VideoCaptureParameter(640, 360, 24), VideoEncoding(500_000, 24))
+            CallQuality.Automatic -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(3_500_000, 30))
+            CallQuality.High -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(5_000_000, 30))
+            CallQuality.Maximum -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(8_000_000, 30))
         }
 
         /** Maximum, when both phones allow it (VideoSize.send1440). */
-        // Balanced: on a slow or lossy network WebRTC sends fewer pixels rather than a
-        // blocky 1440p, and goes back up when the bandwidth returns.
-        val Qhd = CallProfile(VideoCaptureParameter(2560, 1440, 30), VideoEncoding(12_000_000, 30), Balanced)
+        val Qhd = CallProfile(VideoCaptureParameter(2560, 1440, 30), VideoEncoding(12_000_000, 30))
     }
 }
