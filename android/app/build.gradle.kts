@@ -61,13 +61,15 @@ android {
             manifestPlaceholders["appLabel"] = "vynq debug"
         }
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // No shrinking or renaming (owner decision after 0.6.0): native libraries
+            // (libsignal, WebRTC, SQLCipher) call Java code by name, and R8 broke sending in
+            // 0.6.0. Release runs the same code as the tested debug build; the APK is larger.
+            isMinifyEnabled = false
+            isShrinkResources = false
             // Signing key from CI secrets or keystore.properties; never in git.
             signingConfigs.findByName("release")?.let { signingConfig = it }
         }
-        // Same shrunk code as release, installed beside it ("vynq staging") and signed with the
+        // Same code as release, installed beside it ("vynq staging") and signed with the
         // public debug key: for reproducing release-only bugs without the real signing key.
         create("staging") {
             initWith(getByName("release"))

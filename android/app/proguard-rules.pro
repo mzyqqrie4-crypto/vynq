@@ -1,3 +1,5 @@
+# Not used while release shrinking is off (see buildTypes in build.gradle.kts). Kept so the
+# libsignal lesson isn't lost if shrinking is ever turned back on.
 # vynq release rules. Compose, AndroidX and DataStore ship their own consumer rules.
 # Strip verbose/debug logging in release builds.
 -assumenosideeffects class android.util.Log {
