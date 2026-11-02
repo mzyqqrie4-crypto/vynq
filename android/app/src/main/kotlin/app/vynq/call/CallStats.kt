@@ -17,6 +17,7 @@ data class CallStats(
     val rttMs: Long? = null,
     val lossPercent: Double? = null,
     val codec: String? = null,
+    val sendCodec: String? = null,
     val path: String? = null,
 ) {
     fun lines(): List<String> = listOfNotNull(
@@ -24,7 +25,7 @@ data class CallStats(
         "Sending: ${sendResolution ?: "—"} · ${sendFps?.let { "%.0f fps".format(it) } ?: "—"} · ${sendKbps?.let { "$it kbps" } ?: "—"}",
         "Round trip: ${rttMs?.let { "$it ms" } ?: "—"}",
         "Packet loss: ${lossPercent?.let { "%.1f%%".format(it) } ?: "—"}",
-        codec?.let { "Codec: $it" },
+        if (codec != null || sendCodec != null) "Codec: receiving ${codec ?: "—"} · sending ${sendCodec ?: "—"}" else null,
         path?.let { "Route: $it" },
     )
 }
@@ -71,6 +72,7 @@ class StatsSampler(private val room: Room) {
             rttMs = ((pair?.members?.get("currentRoundTripTime") as? Number)?.toDouble()?.times(1000))?.toLong(),
             lossPercent = if (lost + received > 0) lost * 100.0 / (lost + received) else null,
             codec = codec?.removePrefix("video/"),
+            sendCodec = (outVideo?.members?.get("codecId")?.let { pub?.statsMap?.get(it)?.members?.get("mimeType") as? String })?.removePrefix("video/"),
             path = when (remote?.members?.get("candidateType")) {
                 "relay" -> "relayed (TURN)"
                 "srflx", "prflx" -> "direct to server (NAT)"

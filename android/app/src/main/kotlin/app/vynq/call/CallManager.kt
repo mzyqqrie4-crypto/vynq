@@ -14,6 +14,8 @@ import io.livekit.android.room.track.VideoCodec
 import io.livekit.android.room.track.VideoEncoding
 import livekit.org.webrtc.RtpParameters
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import app.vynq.data.auth.BackendApi
 import app.vynq.data.messaging.CallSignal
 import app.vynq.data.messaging.MessagingService
@@ -91,6 +93,12 @@ class CallManager(
     private val ringer = Ringer(context)
     private var room: Room? = null
     private var callKey: String? = null
+    /** What the other phone can decode (from its invite or answer); null until known. */
+    private var peerCodecs: List<String>? = null
+    private var answered = false
+    /** Caller's camera before the answer: shown to the caller, not sent yet. */
+    private var preview: LocalVideoTrack? = null
+    private val cameraLock = Mutex()
     private var roomJob: Job? = null
     private var timeout: Job? = null
     private val trackE2ee = mutableMapOf<String, E2EEState>()
@@ -116,7 +124,8 @@ class CallManager(
         val key = newKey()
         callKey = key
         _state.value = CallState(callId, peer, session.messenger.contactLabel(peer), outgoing = true, video = video, phase = CallPhase.Ringing)
-        val reached = session.messenger.sendCallSignal(peer, CallSignal.INVITE, callId, video = video, callKey = key)
+        val reached = session.messenger.sendCallSignal(peer, CallSignal.INVITE, callId, video = video, callKey = key,
+            codecs = VideoCodecs.receivable())
         if (reached == 0) {
             end("They haven't set up vynq on a phone yet.", notifyPeer = false)
             error("They haven't set up vynq on a phone yet.")
@@ -142,6 +151,7 @@ class CallManager(
                     return
                 }
                 callKey = s.callKey
+                peerCodecs = s.codecs
                 val label = messaging.session.value?.messenger?.contactLabel(s.from) ?: "Someone"
                 _state.value = CallState(s.callId, s.from, label, outgoing = false, video = s.video, phase = CallPhase.Ringing)
                 notifier.showIncoming(s.callId, label, s.video)
@@ -157,7 +167,12 @@ class CallManager(
             }
             CallSignal.ANSWER -> if (current?.callId == s.callId) {
                 if (s.self) { clear("Answered on another phone") }   // our other phone took it
-                else timeout?.cancel()                                // they answered; media joins in the room
+                else {                                                // they answered; media joins in the room
+                    timeout?.cancel()
+                    peerCodecs = s.codecs
+                    answered = true
+                    if (current.video) cameraLock.withLock { publishPreview() }
+                }
             }
             CallSignal.DECLINE -> if (current?.callId == s.callId) {
                 when {
@@ -185,7 +200,7 @@ class CallManager(
         _state.update { it?.copy(phase = CallPhase.Connecting) }
         scope.launch {
             val m = messaging.session.value?.messenger
-            runCatching { m?.sendCallSignal(s.peer, CallSignal.ANSWER, s.callId, alsoMine = true) }
+            runCatching { m?.sendCallSignal(s.peer, CallSignal.ANSWER, s.callId, alsoMine = true, codecs = VideoCodecs.receivable()) }
             runCatching { api.rpc("update_call", buildJsonObject { put("p_call", s.callId); put("p_state", "answered") }) }
             CallService.start(context, s.video)
             connect(s.callId, callKey ?: return@launch end("Missing call key", notifyPeer = true), s.video)
@@ -217,13 +232,21 @@ class CallManager(
     fun toggleCamera() {
         val s = _state.value ?: return
         scope.launch {
-            room?.localParticipant?.setCameraEnabled(!s.cameraOn)
-            _state.update { it?.copy(cameraOn = !s.cameraOn, localVideo = if (!s.cameraOn) localVideoTrack() else null) }
+            cameraLock.withLock {
+                val p = preview
+                if (p != null) {
+                    if (s.cameraOn) p.stopCapture() else p.startCapture()
+                    _state.update { it?.copy(cameraOn = !s.cameraOn, localVideo = if (!s.cameraOn) p else null) }
+                } else {
+                    room?.localParticipant?.setCameraEnabled(!s.cameraOn)
+                    _state.update { it?.copy(cameraOn = !s.cameraOn, localVideo = if (!s.cameraOn) localVideoTrack() else null) }
+                }
+            }
         }
     }
 
     fun switchCamera() {
-        localVideoTrack()?.switchCamera()
+        (preview ?: localVideoTrack())?.switchCamera()
     }
 
     fun toggleSpeaker() {
@@ -266,7 +289,7 @@ class CallManager(
                     simulcast = false,
                     // H.264 runs on the phone's hardware encoder; LiveKit's default VP8 is usually
                     // software on Android and drops resolution at 1080p.
-                    videoCodec = VideoCodec.H264.codecName,
+                    videoCodec = VideoCodec.H264.codecName,   // set per call by VideoCodecs.choose
                     degradationPreference = profile.degradation,
                 ),
             ),
@@ -280,8 +303,7 @@ class CallManager(
         try {
             r.connect(url, token)
             val mic = r.localParticipant.setMicrophoneEnabled(true)
-            val cam = if (video) r.localParticipant.setCameraEnabled(true) else false
-            if (video) _state.update { it?.copy(localVideo = localVideoTrack()) }
+            val cam = if (video) cameraLock.withLock { startCamera(r) } else false
             // Diagnostics only: no ids, names or content.
             Log.i(TAG, "joined: mic=$mic camera=$cam remotes=${r.remoteParticipants.size}")
             // The other phone may already be in the room (we answered): we're connected.
@@ -349,6 +371,42 @@ class CallManager(
         CallService.update(context)
     }
 
+    /**
+     * The caller shows its camera but sends nothing until the answer says what the other
+     * phone can decode; the callee knows from the invite and sends right away.
+     */
+    private suspend fun startCamera(r: Room): Boolean {
+        val s = _state.value ?: return false
+        if (s.outgoing && !answered) {
+            val track = r.localParticipant.createVideoTrack()
+            track.startCapture()
+            preview = track
+            _state.update { it?.copy(localVideo = track) }
+            return true
+        }
+        return publishCamera(r)
+    }
+
+    /** They answered: swap the caller's preview for a sent camera in the agreed format. */
+    private suspend fun publishPreview() {
+        val r = room ?: return              // still connecting: startCamera sends once joined
+        val p = preview ?: return
+        preview = null
+        val on = _state.value?.cameraOn ?: true
+        runCatching { p.stop(); p.dispose() }
+        publishCamera(r)
+        if (!on) runCatching { r.localParticipant.setCameraEnabled(false) }
+    }
+
+    private suspend fun publishCamera(r: Room): Boolean {
+        val codec = VideoCodecs.choose(peerCodecs)
+        r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(videoCodec = codec)
+        val ok = runCatching { r.localParticipant.setCameraEnabled(true) }.getOrDefault(false)
+        Log.i(TAG, "camera sent as $codec (they decode ${peerCodecs ?: "unknown"}): $ok")
+        _state.update { it?.copy(localVideo = localVideoTrack()) }
+        return ok
+    }
+
     private fun localVideoTrack(): LocalVideoTrack? =
         room?.localParticipant?.getTrackPublication(Track.Source.CAMERA)?.track as? LocalVideoTrack
 
@@ -369,6 +427,10 @@ class CallManager(
         room?.let { r -> runCatching { r.disconnect() }; runCatching { r.release() } }
         room = null
         callKey = null
+        peerCodecs = null
+        answered = false
+        preview?.let { p -> runCatching { p.stop(); p.dispose() } }
+        preview = null
         trackE2ee.clear()
         ringer.stop()
         notifier.cancelIncoming()

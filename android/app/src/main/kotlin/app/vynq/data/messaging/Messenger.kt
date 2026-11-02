@@ -386,7 +386,7 @@ class Messenger(
         if (payload.control != null) {
             if (payload.control.startsWith("call_") && payload.callId != null) {
                 onCallSignal?.invoke(CallSignal(payload.control, payload.callId, sender, fromDevice, self,
-                    payload.video ?: true, payload.callKey, payload.reason, payload.sentAt))
+                    payload.video ?: true, payload.callKey, payload.reason, payload.sentAt, payload.codecs))
             } else if (self) {
                 handleControl(fromDevice, payload)
             }
@@ -414,9 +414,10 @@ class Messenger(
     suspend fun sendCallSignal(
         peer: String, type: String, callId: String,
         video: Boolean? = null, callKey: String? = null, reason: String? = null, alsoMine: Boolean = false,
+        codecs: List<String>? = null,
     ): Int = locked {
         val payload = WirePayload(id = UUID.randomUUID().toString(), from = userId, sentAt = now(), control = type,
-            callId = callId, video = video, callKey = callKey, reason = reason)
+            callId = callId, video = video, callKey = callKey, reason = reason, codecs = codecs)
         val theirs = syncDevices(peer)
         val reached = sendControl(theirs, payload)
         if (alsoMine) sendControl(syncDevices(userId), payload)
