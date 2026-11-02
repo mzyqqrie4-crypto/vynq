@@ -40,6 +40,7 @@ import app.vynq.designsystem.component.ListRow
 import app.vynq.designsystem.component.RowDivider
 import app.vynq.designsystem.component.SectionLabel
 import app.vynq.designsystem.component.VynqAlert
+import app.vynq.designsystem.component.pressable
 import app.vynq.designsystem.component.VynqConfirm
 import kotlinx.coroutines.launch
 import app.vynq.designsystem.icon.VynqIcons
@@ -67,6 +68,28 @@ fun SettingsTab(onOpen: (String) -> Unit) {
     var confirm by remember { mutableStateOf<AccountAction?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
     val c = VynqTheme.colors
+    val session = app.vynq.ui.messaging.messagingSession()
+    // Saving runs in the app scope so leaving Settings can't cancel an upload halfway.
+    val pictureScope = context.container.appScope
+    val hasPicture by app.vynq.ui.messaging.rememberLocal(session, false) {
+        it.dao.get(app.vynq.data.messaging.ContactLocal.NS_AVATAR_PATH, it.userId) != null
+    }
+    var savingPicture by remember { mutableStateOf(false) }
+    val pickPicture = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        val s = session ?: return@rememberLauncherForActivityResult
+        if (uri != null) pictureScope.launch {
+            savingPicture = true
+            runCatching {
+                val jpeg = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { prepareProfilePicture(context, uri) }
+                s.messenger.setAvatar(jpeg)
+            }.onFailure { failure = it.userMessage() }
+            savingPicture = false
+        }
+    }
+    fun choosePicture() = pickPicture.launch(
+        androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
 
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = VynqSpacing.gutter),
@@ -79,8 +102,14 @@ fun SettingsTab(onOpen: (String) -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(VynqSpacing.lg),
         ) {
-            Box(Modifier.size(60.dp).background(c.brandSweep, CircleShape), contentAlignment = Alignment.Center) {
-                Icon(VynqIcons.Contacts, null, Modifier.size(28.dp), tint = VynqPalette.SoftWhite)
+            if (signedIn != null && session != null) {
+                Box(Modifier.pressable(onClick = ::choosePicture)) {
+                    app.vynq.ui.messaging.Avatar(profile?.username ?: signedIn.email, 60, signedIn.userId)
+                }
+            } else {
+                Box(Modifier.size(60.dp).background(c.brandSweep, CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(VynqIcons.Contacts, null, Modifier.size(28.dp), tint = VynqPalette.SoftWhite)
+                }
             }
             Column {
                 val (title, subtitle) = when {
@@ -103,6 +132,27 @@ fun SettingsTab(onOpen: (String) -> Unit) {
                     value = profile?.username?.let { "@$it" } ?: "Not set",
                     onClick = { onOpen(Routes.USERNAME_CHANGE) },
                 )
+                RowDivider()
+                ListRow(
+                    "Profile picture", icon = VynqIcons.Photo,
+                    subtitle = "Only your contacts can see it · end-to-end encrypted",
+                    value = when { savingPicture -> "Saving…"; hasPicture -> "Change"; else -> "Add" },
+                    enabled = session != null && !savingPicture,
+                    disabledReason = if (session == null) "Starting…" else null,
+                    onClick = ::choosePicture,
+                )
+                if (hasPicture) {
+                    RowDivider()
+                    ListRow("Remove profile picture", icon = VynqIcons.Warning, iconTint = c.danger,
+                        enabled = !savingPicture,
+                        onClick = {
+                            pictureScope.launch {
+                                savingPicture = true
+                                runCatching { session!!.messenger.setAvatar(null) }.onFailure { failure = it.userMessage() }
+                                savingPicture = false
+                            }
+                        })
+                }
             }
             if (signedIn != null) {
                 RowDivider()

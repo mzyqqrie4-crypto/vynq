@@ -24,6 +24,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -42,6 +43,7 @@ class MessengerTest {
         val mailbox = mutableListOf<Mail>()
         val blobs = mutableMapOf<String, ByteArray>()
         val vaults = mutableMapOf<String, String>()                    // user -> wrapped key (b64)
+        val avatars = mutableMapOf<String, String>()                   // user -> avatar path
         val history = mutableListOf<Triple<Long, String, Pair<String, String>>>() // seq, user, (record id, blob b64)
         var nextId = 1L
         /** Set to swap a device's identity key in everything the server hands out. */
@@ -76,6 +78,7 @@ class MessengerTest {
             "list_contacts" -> JsonArray(contacts.filterKeys { it.first == user }.map { (k, state) ->
                 buildJsonObject {
                     put("user_id", k.second); put("username", usernames.entries.first { it.value == k.second }.key); put("state", state)
+                    put("avatar_path", if (state == "accepted") avatars[k.second]?.let(::JsonPrimitive) ?: JsonNull else JsonNull)
                 }
             })
             "request_contact" -> {
@@ -84,6 +87,21 @@ class MessengerTest {
                 contacts[user to target] = state
                 contacts[target to user] = if (state == "accepted") "accepted" else "pending_in"
                 buildJsonArray { add(buildJsonObject { put("user_id", target); put("state", state) }) }
+            }
+            "remove_contact" -> {
+                val other = a.s("p_user_id")!!
+                contacts.remove(user to other); contacts.remove(other to user); JsonNull
+            }
+            "set_avatar" -> {
+                val path = a.s("p_path")
+                if (path != null) require(path.startsWith("$user/")) { "invalid_avatar_path" }
+                if (path == null) avatars.remove(user) else avatars[user] = path; JsonNull
+            }
+            "my_avatar" -> avatars[user]?.let(::JsonPrimitive) ?: JsonNull
+            "delete_history" -> {
+                val ids = a["p_ids"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet()
+                val n = history.count { it.second == user && it.third.first in ids }
+                history.removeAll { it.second == user && it.third.first in ids }; JsonPrimitive(n)
             }
             "accept_contact" -> {
                 val other = a.s("p_user_id")!!
@@ -165,8 +183,9 @@ class MessengerTest {
             override val deviceName = "Phone ${deviceId.take(4)}"
             override suspend fun function(name: String, args: JsonObject): JsonElement = error("no functions in tests")
             override suspend fun rpc(function: String, args: JsonObject) = server.handle(user, deviceId, function, args)
-            override suspend fun upload(path: String, bytes: ByteArray) { server.blobs[path] = bytes }
-            override suspend fun download(path: String) = server.blobs.getValue(path)
+            override suspend fun upload(path: String, bytes: ByteArray, bucket: String) { server.blobs["$bucket/$path"] = bytes }
+            override suspend fun download(path: String, bucket: String) = server.blobs.getValue("$bucket/$path")
+            override suspend fun remove(path: String, bucket: String) { server.blobs.remove("$bucket/$path") }
         }
         val messenger = Messenger(api, dao, user, MemoryAttachmentCache(), StandardTestDispatcher(scope.testScheduler))
         fun texts(peer: String, kind: MessageKind = MessageKind.Text) = dao.messages(peer).filter { it.kind == kind }.map { it.text }
@@ -294,12 +313,12 @@ class MessengerTest {
         a.messenger.sendPhoto(bob, image, "image/jpeg", 100, 100)
         b.messenger.sync()
         val pointer = b.dao.messages(alice).single().attachment!!
-        assertFalse(server.blobs.getValue(pointer.path).toList().windowed(64, 4096).any { it == image.toList().take(64) })
+        assertFalse(server.blobs.getValue("attachments/${pointer.path}").toList().windowed(64, 4096).any { it == image.toList().take(64) })
         assertTrue(image.contentEquals(b.messenger.openAttachment(pointer)))
 
         // A tampered blob on the server is rejected on a device that hasn't cached it yet.
         val c = Phone(server, bob, this)
-        server.blobs[pointer.path] = server.blobs.getValue(pointer.path).copyOf().also { it[100] = (it[100] + 1).toByte() }
+        server.blobs["attachments/${pointer.path}"] = server.blobs.getValue("attachments/${pointer.path}").copyOf().also { it[100] = (it[100] + 1).toByte() }
         val error = runCatching { c.messenger.openAttachment(pointer) }.exceptionOrNull()
         assertTrue(error is app.vynq.data.crypto.AttachmentCrypto.IntegrityException)
     }
@@ -453,5 +472,93 @@ class MessengerTest {
         assertEquals(0, runCatching { a.messenger.sendCallSignal(bob, "call_invite", "c-3", callKey = "x") }.getOrDefault(0))
         b.messenger.sync()
         assertTrue(got.isEmpty())
+    }
+
+    // --- contacts: nicknames, removing, profile pictures ---------------------------------------
+
+    @Test fun `a nickname follows me to my other phone and to a new phone, and the contact never sees it`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        a.messenger.start(); b.messenger.start()
+        connect(a, b, "bob")
+        val a2 = Phone(server, alice, this); a2.messenger.start()
+        a.messenger.setNickname(bob, "  Bobby  ")
+        assertEquals("Bobby", a.dao.contact(bob)!!.label)
+
+        a2.messenger.refreshContacts(); a2.messenger.sync()                  // my other phone
+        assertEquals("Bobby", a2.dao.contact(bob)!!.label)
+        b.messenger.sync()                                                   // the contact
+        assertEquals("@alice", b.dao.contact(alice)!!.label)
+
+        // A brand-new phone with the recovery key restores it from the encrypted history.
+        val a3 = Phone(server, alice, this); a3.messenger.start()
+        assertTrue(a3.messenger.unlockWithRecoveryKey(a.messenger.recoveryKeyText()!!))
+        a3.messenger.refreshContacts()
+        assertEquals("Bobby", a3.dao.contact(bob)!!.label)
+
+        a.messenger.setNickname(bob, "")                                      // cleared
+        assertEquals("@bob", a.dao.contact(bob)!!.label)
+    }
+
+    @Test fun `removing a contact can keep the chat read-only or delete it everywhere`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        a.messenger.start(); b.messenger.start()
+        connect(a, b, "bob")
+        a.messenger.sendText(bob, "hello"); b.messenger.sync()
+
+        a.messenger.removeContact(bob)                                        // keep the chat
+        assertEquals(ContactState.Removed, a.dao.contact(bob)!!.state)
+        assertEquals(listOf("hello"), a.texts(bob))
+        assertEquals(MessageStatus.Failed, a.messenger.sendText(bob, "still there?").status)   // not contacts any more
+        b.messenger.refreshContacts()
+        assertEquals(ContactState.Removed, b.dao.contact(alice)!!.state)      // Bob keeps his copy, read-only
+
+        val a2 = Phone(server, alice, this); a2.messenger.start()
+        assertTrue(a2.messenger.unlockWithRecoveryKey(a.messenger.recoveryKeyText()!!))
+        assertTrue(a2.texts(bob).contains("hello"))                           // restored on another phone
+        a.messenger.deleteChat(bob)                                           // now delete it
+        assertTrue(a.texts(bob).isEmpty())
+        assertNull(a.dao.contact(bob))
+        a2.messenger.sync()
+        assertTrue(a2.texts(bob).isEmpty())                                   // gone on my other phone
+        val a3 = Phone(server, alice, this); a3.messenger.start()
+        assertTrue(a3.messenger.unlockWithRecoveryKey(a.messenger.recoveryKeyText()!!))
+        assertTrue(a3.texts(bob).isEmpty())                                   // and from the history
+    }
+
+    @Test fun `a profile picture is encrypted and only contacts with the key can open it`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        a.messenger.start(); b.messenger.start()
+        connect(a, b, "bob")
+        val picture = ByteArray(3000) { (it % 200).toByte() }
+        a.messenger.setAvatar(picture)
+        val stored = server.blobs.entries.single { it.key.startsWith("avatars/") }.value
+        assertFalse(stored.toList().windowed(32).any { it == picture.take(32) })   // server copy is ciphertext
+
+        b.messenger.sync(); b.messenger.refreshContacts()                      // key arrives over Signal
+        assertTrue(picture.contentEquals(b.messenger.avatar(alice)))
+        assertTrue(picture.contentEquals(a.messenger.avatar(alice)))           // my own, from the local copy
+
+        val stranger = Phone(server, "c0000000-0000-4000-8000-000000000003", this); stranger.messenger.start()
+        assertNull(stranger.messenger.avatar(alice))                           // no contact, no path, no key
+
+        a.messenger.setAvatar(null)
+        b.messenger.refreshContacts()
+        assertNull(b.messenger.avatar(alice))
+        assertTrue(server.blobs.keys.none { it.startsWith("avatars/") })       // old file deleted
+    }
+
+    @Test fun `a nickname set before history is unlocked is backed up once it is`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        a.messenger.start(); b.messenger.start()
+        connect(a, b, "bob")
+        val a2 = Phone(server, alice, this); a2.messenger.start()             // locked: history not handed over yet
+        a2.messenger.setNickname(bob, "B")
+        assertTrue(server.history.none { it.third.first.startsWith("nick:") })
+        assertTrue(a2.messenger.unlockWithRecoveryKey(a.messenger.recoveryKeyText()!!))
+        assertTrue(server.history.any { it.third.first.startsWith("nick:") }) // went up after unlocking
+        val a3 = Phone(server, alice, this); a3.messenger.start()
+        assertTrue(a3.messenger.unlockWithRecoveryKey(a.messenger.recoveryKeyText()!!))
+        a3.messenger.refreshContacts()
+        assertEquals("B", a3.dao.contact(bob)!!.label)
     }
 }

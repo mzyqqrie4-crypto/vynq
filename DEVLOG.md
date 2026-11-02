@@ -1,5 +1,21 @@
 # vynq development log
 
+## 2026-11-03: 0.7.0 — remove contacts, nicknames, encrypted profile pictures (branch `feature/contact-profiles`)
+
+Owner request ("we can't remove a contact, add profile pictures, or give contacts nicknames"). Owner decisions: pictures visible only to contacts and end-to-end encrypted; nicknames private and synced to the owner's phones; removing asks each time whether to keep the chat.
+
+**Implemented**
+- Backend migration `20261105000000_contact_profiles.sql` (applied to the live project): `profiles.avatar_path` (set only through `set_avatar`, own folder only), `my_avatar`, `list_contacts` now returns the picture path for accepted contacts only, `delete_history(ids)` (own records only), private `avatars` bucket (owner and contacts can read, owner writes/deletes, 2 MB). `delete-account` (redeployed) also purges `avatars/<uid>/`.
+- Profile pictures: cropped to 512×512 and re-encoded on the phone (no EXIF), encrypted with a per-account profile key (AES-256-GCM bound to the owner id, `ProfileCrypto`). The key reaches contacts only inside Signal messages: sent when someone becomes a contact, when the picture changes, and with every text. Own phones get it over Signal and from the encrypted history. Shown in chats, the chat list, the contact screen and Settings.
+- Nicknames: stored locally, synced to own phones over Signal, and kept as encrypted history records so a new phone gets them; saved once the phone's history is unlocked if it wasn't yet.
+- Contact screen (tap a contact in Contacts or a chat's header): picture, nickname, safety number, message, remove. Removing offers "Remove, keep chat" (stays readable, read-only, marked as no longer a contact) or "Remove and delete chat" (deleted here, on own phones and from the history).
+
+**Tested (executed)**
+- Backend 65/65 (5 new). Android 86/86 (7 new: picture encryption; nickname sync, privacy and restore; nickname backed up after unlock; remove keeping or deleting the chat everywhere; picture only openable by contacts, old file deleted).
+- On the Xiaomi (staging build): profile picture set; the server holds one encrypted file and the path.
+
+**Not verified:** the picture showing on the other phone, nicknames and removal on a phone (the realme was unreachable; the owner installs 0.7.0 from GitHub to test).
+
 ## 2026-11-02: 0.6.1 — texts failed in the 0.6.0 release build (fixed)
 
 **Bug:** in the published 0.6.0, every text failed on both phones (the debug app was fine). The release shrinker (R8) renamed libsignal's `NativeHandleGuard$Owner`, so libsignal's adapter method became `loadSession(J)Luv1;` while its native code looks up `loadSession(J)Lorg/signal/libsignal/internal/NativeHandleGuard$Owner;` → `JNI error Method not found`, caught silently and shown as a failed text. libsignal's bundled rules keep those store types' names only when otherwise unreferenced.

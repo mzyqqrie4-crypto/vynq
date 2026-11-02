@@ -2,15 +2,26 @@ package app.vynq.data.messaging
 
 import kotlinx.serialization.Serializable
 
-enum class ContactState { Outgoing, Incoming, Accepted }
+/** Removed: no longer contacts, but the chat was kept (read-only) on this phone. */
+enum class ContactState { Outgoing, Incoming, Accepted, Removed }
 
 data class Contact(
     val userId: String,
     val username: String?,
     val displayName: String?,
     val state: ContactState,
+    /** A private name only this account sees (synced to its own phones). */
+    val nickname: String? = null,
+    /** Where their encrypted profile picture is stored, if they have one. */
+    val avatarPath: String? = null,
 ) {
-    val label: String get() = displayName ?: username?.let { "@$it" } ?: "Unknown"
+    val label: String get() = nickname ?: displayName ?: username?.let { "@$it" } ?: "Unknown"
+}
+
+/** Per-contact details kept in the encrypted key-value store (see MessagingDao). */
+object ContactLocal {
+    const val NS_NICKNAME = "nickname"
+    const val NS_AVATAR_PATH = "avatar_path"
 }
 
 enum class MessageKind { Text, Photo, System }
@@ -79,6 +90,8 @@ data class WirePayload(
     val codecs: List<String>? = null,
     /** Short side of the sending phone's screen in pixels (invite and answer); see VideoSize. */
     val screen: Int? = null,
+    /** The sender's profile key, which opens their profile picture (see ProfileCrypto). */
+    val profileKey: String? = null,
 )
 
 /** A call signal from a contact (or from one of our own phones, e.g. "answered elsewhere"). */

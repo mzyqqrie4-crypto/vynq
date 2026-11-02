@@ -1,5 +1,6 @@
 package app.vynq.data.messaging
 
+import app.vynq.data.crypto.ProfileCrypto
 import android.util.Log
 import app.vynq.data.auth.AccountError
 import app.vynq.data.auth.BackendApi
@@ -139,6 +140,8 @@ class Messenger(
 
     suspend fun refreshContacts(): List<Contact> {
         val rows = api.rpc("list_contacts", JsonObject(emptyMap())).jsonArray.map { it.jsonObject }
+        val myAvatar = runCatching { api.rpc("my_avatar", JsonObject(emptyMap())) }.getOrNull()
+        val before = withContext(io) { dao.contacts() }.associateBy { it.userId }
         val list = rows.map { r ->
             Contact(
                 userId = r.str("user_id")!!,
@@ -151,25 +154,158 @@ class Messenger(
                 },
             )
         }
-        withContext(io) { dao.replaceContacts(list) }
+        withContext(io) {
+            // A removed contact whose chat was kept stays readable, read-only, until the chat is deleted.
+            val kept = before.values.filter { old ->
+                list.none { it.userId == old.userId } && old.state in KEEPABLE && dao.messages(old.userId).isNotEmpty()
+            }.map { it.copy(state = ContactState.Removed) }
+            dao.replaceContacts(list + kept)
+            rows.forEach { r -> dao.setAvatarPath(r.str("user_id")!!, r.str("avatar_path")) }
+            if (myAvatar != null) dao.setAvatarPath(userId, (myAvatar as? JsonPrimitive)?.contentOrNull)
+        }
+        // New contacts get our profile key, so they can see our profile picture.
+        list.filter { it.state == ContactState.Accepted && before[it.userId]?.state != ContactState.Accepted }
+            .forEach { profileShares += it.userId }
         return list
     }
 
     suspend fun requestContact(username: String): ContactState {
         val row = api.rpc("request_contact", buildJsonObject { put("p_username", username.trim().lowercase()) }).firstRow()
         refreshContacts()
+        flushProfileShares()
         return if (row?.str("state") == "accepted") ContactState.Accepted else ContactState.Outgoing
     }
 
     suspend fun acceptContact(user: String) {
         api.rpc("accept_contact", buildJsonObject { put("p_user_id", user) })
         refreshContacts()
+        flushProfileShares()
     }
 
-    suspend fun removeContact(user: String) {
+    /**
+     * Ends a contact (or declines / cancels a request). With [deleteChat] the
+     * conversation is also deleted here, from the encrypted history and on this
+     * account's other phones; otherwise it stays readable, read-only.
+     */
+    suspend fun removeContact(user: String, deleteChat: Boolean = false) {
         api.rpc("remove_contact", buildJsonObject { put("p_user_id", user) })
+        if (deleteChat) deleteChat(user)
         refreshContacts()
     }
+
+    /** Deletes a conversation here, from the encrypted history, and on this account's other phones. */
+    suspend fun deleteChat(peer: String) {
+        val ids = withContext(io) { dao.messages(peer).map { it.id } }
+        ids.chunked(500).forEach { chunk ->
+            api.rpc("delete_history", buildJsonObject { put("p_ids", buildJsonArray { chunk.forEach { add(JsonPrimitive(it)) } }) })
+        }
+        withContext(io) { dao.deleteMessages(peer) }
+        runCatching { locked { sendControl(syncDevices(userId), control(CONTROL_CHAT_DELETE).copy(syncPeer = peer)) } }
+        if (dao.contact(peer)?.state == ContactState.Removed) refreshContacts()
+    }
+
+    /** A private name for a contact that only this account sees, on all its phones. Blank clears it. */
+    suspend fun setNickname(peer: String, nickname: String?) {
+        val name = nickname?.trim()?.take(40)?.takeIf { it.isNotEmpty() }
+        withContext(io) { dao.setNickname(peer, name); dao.put(NS_NICK_PENDING, peer, byteArrayOf(1)) }
+        runCatching { backUpSettings() }
+        runCatching { locked { sendControl(syncDevices(userId), control(CONTROL_NICKNAME).copy(syncPeer = peer, text = name)) } }
+    }
+
+    // --- profile picture ------------------------------------------------------------------------
+
+    private val profileShares: MutableSet<String> = java.util.Collections.synchronizedSet(mutableSetOf())
+
+    private fun ownProfileKey(): ByteArray? = dao.get(NS_PROFILE, "key")
+
+    private suspend fun ensureProfileKey(): ByteArray {
+        ownProfileKey()?.let { return it }
+        val pk = ProfileCrypto.newKey()
+        withContext(io) { dao.put(NS_PROFILE, "key", pk); dao.delete(NS_PROFILE, "key_backed_up") }
+        runCatching { backUpSettings() }
+        return pk
+    }
+
+    /**
+     * Sets this account's profile picture (JPEG), or removes it with null. It is
+     * encrypted here with the profile key; only contacts get that key.
+     */
+    suspend fun setAvatar(jpeg: ByteArray?) {
+        val old = dao.get(ContactLocal.NS_AVATAR_PATH, userId)?.decodeToString()
+        if (jpeg == null) {
+            api.rpc("set_avatar", buildJsonObject { put("p_path", JsonNull) })
+            withContext(io) { dao.setAvatarPath(userId, null); dao.delete(NS_AVATAR, userId); dao.delete(NS_AVATAR_LOADED, userId) }
+        } else {
+            val pk = ensureProfileKey()
+            val path = "$userId/${UUID.randomUUID()}"
+            api.upload(path, ProfileCrypto.seal(pk, userId, jpeg), BackendApi.AVATARS)
+            api.rpc("set_avatar", buildJsonObject { put("p_path", path) })
+            withContext(io) {
+                dao.put(NS_AVATAR, userId, jpeg)
+                dao.put(NS_AVATAR_LOADED, userId, path.encodeToByteArray())
+                dao.setAvatarPath(userId, path)
+            }
+            // Contacts (and our own other phones) get the key now, not only with the next message.
+            profileShares += dao.contacts().filter { it.state == ContactState.Accepted }.map { it.userId } + userId
+            flushProfileShares()
+        }
+        if (old != null) runCatching { api.remove(old, BackendApi.AVATARS) }
+    }
+
+    /** Someone's profile picture (JPEG), or null. Downloaded and decrypted once per change, then kept here. */
+    suspend fun avatar(user: String): ByteArray? = withContext(io) {
+        val path = dao.get(ContactLocal.NS_AVATAR_PATH, user)?.decodeToString() ?: return@withContext null
+        if (dao.get(NS_AVATAR_LOADED, user)?.decodeToString() == path) return@withContext dao.get(NS_AVATAR, user)
+        val key = (if (user == userId) ownProfileKey() else dao.get(NS_PEER_PROFILE_KEY, user)) ?: return@withContext null
+        val jpeg = runCatching { ProfileCrypto.open(key, user, api.download(path, BackendApi.AVATARS)) }.getOrNull()
+            ?: return@withContext null
+        dao.put(NS_AVATAR, user, jpeg)
+        dao.put(NS_AVATAR_LOADED, user, path.encodeToByteArray())
+        jpeg
+    }
+
+    private suspend fun flushProfileShares() {
+        val pk = ownProfileKey() ?: run { profileShares.clear(); return }
+        val users = synchronized(profileShares) { profileShares.toList().also { profileShares.clear() } }
+        for (u in users) runCatching { locked { sendControl(syncDevices(u), control(CONTROL_PROFILE).copy(profileKey = b64.encodeToString(pk))) } }
+    }
+
+    /**
+     * Nicknames and the profile key go into the encrypted history too, so a new phone
+     * gets them. If this phone can't write history yet (not unlocked), they wait here
+     * and go up as soon as it can.
+     */
+    private suspend fun backUpSettings() {
+        val hk = historyKey() ?: return
+        val records = withContext(io) {
+            buildList {
+                dao.keys(NS_NICK_PENDING).forEach { peer ->
+                    add(HistoryRecord(id = "$NICK_PREFIX$peer:${now()}", peer = peer, outgoing = true,
+                        kind = MessageKind.System, text = dao.get(ContactLocal.NS_NICKNAME, peer)?.decodeToString(), sentAt = now()))
+                }
+                val pk = ownProfileKey()
+                if (pk != null && dao.get(NS_PROFILE, "key_backed_up") == null) {
+                    add(HistoryRecord(id = "$PK_PREFIX${now()}", peer = userId, outgoing = true,
+                        kind = MessageKind.System, text = b64.encodeToString(pk), sentAt = now()))
+                }
+            }
+        }
+        if (records.isEmpty()) return
+        appendHistory(hk, records)
+        withContext(io) {
+            records.forEach { r -> if (r.id.startsWith(NICK_PREFIX)) dao.delete(NS_NICK_PENDING, r.peer) else dao.put(NS_PROFILE, "key_backed_up", byteArrayOf(1)) }
+        }
+    }
+
+    private fun adoptPeerProfileKey(user: String, encoded: String) {
+        val pk = runCatching { unb64.decode(encoded) }.getOrNull()?.takeIf { it.size == 32 } ?: return
+        if (dao.get(NS_PEER_PROFILE_KEY, user)?.contentEquals(pk) == true) return
+        dao.put(NS_PEER_PROFILE_KEY, user, pk)
+        dao.delete(NS_AVATAR_LOADED, user)          // open their picture again with the new key
+        dao.setAvatarPath(user, null); dao.setAvatarPath(user, dao.contact(user)?.avatarPath) // nudge the UI
+    }
+
+    private fun control(type: String) = WirePayload(id = UUID.randomUUID().toString(), from = userId, sentAt = now(), control = type)
 
     // --- devices and trust --------------------------------------------------------------------
 
@@ -279,7 +415,8 @@ class Messenger(
     }
 
     private suspend fun encryptAndSend(message: Message) {
-        val payload = WirePayload(id = message.id, from = userId, sentAt = message.sentAt, text = message.text, attachment = message.attachment)
+        val payload = WirePayload(id = message.id, from = userId, sentAt = message.sentAt, text = message.text, attachment = message.attachment,
+            profileKey = ownProfileKey()?.let(b64::encodeToString))
         val theirs = syncDevices(message.peer)
         if (theirs.isEmpty()) throw IllegalStateException("recipient has no devices ready")
         val mine = syncDevices(userId)
@@ -335,7 +472,10 @@ class Messenger(
      * Fetches, decrypts and stores everything waiting for this device, then
      * acknowledges it. Returns the new incoming messages (for notifications).
      */
-    suspend fun sync(): List<Message> = syncInbox().also { runCatching { archivePending() } }
+    suspend fun sync(): List<Message> = syncInbox().also {
+        runCatching { archivePending() }
+        runCatching { flushProfileShares() }
+    }
 
     private suspend fun syncInbox(): List<Message> = locked {
         val received = mutableListOf<Message>()
@@ -387,6 +527,7 @@ class Messenger(
         val payload = runCatching { json.decodeFromString(WirePayload.serializer(), plain.decodeToString()) }.getOrNull()
             ?: return null
         if (payload.from != sender) return null
+        if (!self) payload.profileKey?.let { withContext(io) { adoptPeerProfileKey(sender, it) } }
         if (payload.control != null) {
             if (payload.control.startsWith("call_") && payload.callId != null) {
                 onCallSignal?.invoke(CallSignal(payload.control, payload.callId, sender, fromDevice, self,
@@ -533,6 +674,13 @@ class Messenger(
                 historyRequests.value = loadHistoryRequests()
                 onHistoryRequest?.invoke(req)
             }
+            CONTROL_NICKNAME -> p.syncPeer?.let { peer ->
+                withContext(io) { dao.setNickname(peer, p.text?.trim()?.take(40)?.takeIf { it.isNotEmpty() }) }
+            }
+            CONTROL_CHAT_DELETE -> p.syncPeer?.let { peer -> withContext(io) { dao.deleteMessages(peer) } }
+            CONTROL_PROFILE -> p.profileKey?.let { runCatching { unb64.decode(it) }.getOrNull() }?.takeIf { it.size == 32 }?.let { pk ->
+                withContext(io) { dao.put(NS_PROFILE, "key", pk); dao.put(NS_PROFILE, "key_backed_up", byteArrayOf(1)); dao.delete(NS_AVATAR_LOADED, userId) }
+            }
             CONTROL_HISTORY_KEY -> if (historyKey() == null) {
                 val hk = p.historyKey?.let(unb64::decode)?.takeIf { it.size == 32 } ?: return
                 pendingKey = hk to p.recoveryKey?.let(unb64::decode)
@@ -580,6 +728,12 @@ class Messenger(
                             HistoryCrypto.openRecord(hk, id, unb64.decode(r.str("blob")!!)).decodeToString())
                     }.getOrNull() ?: continue // damaged or not readable with this key: skip it
                     if (record.id != id) continue
+                    if (id.startsWith(NICK_PREFIX)) { dao.setNickname(record.peer, record.text); continue }
+                    if (id.startsWith(PK_PREFIX)) {
+                        record.text?.let { runCatching { unb64.decode(it) }.getOrNull() }?.takeIf { it.size == 32 }
+                            ?.let { dao.put(NS_PROFILE, "key", it); dao.put(NS_PROFILE, "key_backed_up", byteArrayOf(1)) }
+                        continue
+                    }
                     dao.insertMessage(Message(record.id, record.peer, record.outgoing, record.kind, record.text,
                         record.attachment, record.sentAt, if (record.outgoing) MessageStatus.Sent else MessageStatus.Received,
                         read = true, archived = true))
@@ -595,23 +749,29 @@ class Messenger(
     private suspend fun archivePending() {
         applyPendingKey()
         val hk = historyKey() ?: return
+        runCatching { backUpSettings() }
         while (true) {
             val batch = withContext(io) { dao.unarchived(100) }
                 .filter { it.status != MessageStatus.Sending && it.status != MessageStatus.Failed }
             if (batch.isEmpty()) return
-            api.rpc("append_history", buildJsonObject {
-                put("p_records", buildJsonArray {
-                    batch.forEach { m ->
-                        val record = HistoryRecord(id = m.id, peer = m.peer, outgoing = m.outgoing, kind = m.kind,
-                            text = m.text, attachment = m.attachment, sentAt = m.sentAt)
-                        val blob = HistoryCrypto.sealRecord(hk, m.id, json.encodeToString(HistoryRecord.serializer(), record).encodeToByteArray())
-                        addJsonObject { put("id", m.id); put("blob", b64.encodeToString(blob)) }
-                    }
-                })
+            appendHistory(hk, batch.map { m ->
+                HistoryRecord(id = m.id, peer = m.peer, outgoing = m.outgoing, kind = m.kind,
+                    text = m.text, attachment = m.attachment, sentAt = m.sentAt)
             })
             withContext(io) { dao.markArchived(batch.map { it.id }) }
             if (batch.size < 100) return
         }
+    }
+
+    private suspend fun appendHistory(hk: ByteArray, records: List<HistoryRecord>) {
+        api.rpc("append_history", buildJsonObject {
+            put("p_records", buildJsonArray {
+                records.forEach { r ->
+                    val blob = HistoryCrypto.sealRecord(hk, r.id, json.encodeToString(HistoryRecord.serializer(), r).encodeToByteArray())
+                    addJsonObject { put("id", r.id); put("blob", b64.encodeToString(blob)) }
+                }
+            })
+        })
     }
 
     private suspend fun sendControl(devices: List<RemoteDevice>, payload: WirePayload): Int {
@@ -666,6 +826,17 @@ class Messenger(
         private const val NS_HISTORY_REQ = "history_req"
         private const val HISTORY_PAGE = 200
         const val CONTROL_HISTORY_REQUEST = "history_request"
+        const val CONTROL_NICKNAME = "nickname"
+        const val CONTROL_CHAT_DELETE = "chat_delete"
+        const val CONTROL_PROFILE = "profile"
+        private const val NS_PROFILE = "profile"
+        private const val NS_PEER_PROFILE_KEY = "peer_profile_key"
+        private const val NS_AVATAR = "avatar"
+        private const val NS_AVATAR_LOADED = "avatar_loaded"
+        private const val NICK_PREFIX = "nick:"
+        private const val NS_NICK_PENDING = "nickname_pending"
+        private const val PK_PREFIX = "pk:"
+        private val KEEPABLE = setOf(ContactState.Accepted, ContactState.Removed)
         const val CONTROL_HISTORY_KEY = "history_key"
         private const val ONE_TIME_BATCH = 100
         private const val ONE_TIME_LOW = 20

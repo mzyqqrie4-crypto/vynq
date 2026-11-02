@@ -114,7 +114,7 @@ private fun ConversationRow(conversation: Conversation, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(VynqSpacing.md),
     ) {
-        Avatar(conversation.contact.label, 48)
+        Avatar(conversation.contact.label, 48, conversation.contact.userId)
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(conversation.contact.label, style = VynqTheme.type.headline, color = c.textPrimary, modifier = Modifier.weight(1f), maxLines = 1)

@@ -52,7 +52,7 @@ import kotlinx.coroutines.launch
  * be sent.
  */
 @Composable
-fun ContactsTab(onOpenChat: (String) -> Unit) {
+fun ContactsTab(onOpenContact: (String) -> Unit) {
     val session = messagingSession()
     val container = LocalContext.current.container
     val scope = rememberCoroutineScope()
@@ -145,7 +145,7 @@ fun ContactsTab(onOpenChat: (String) -> Unit) {
                         c.label,
                         icon = VynqIcons.Contacts,
                         subtitle = c.username?.let { "@$it" }?.takeIf { c.displayName != null },
-                        onClick = { onOpenChat(c.userId) },
+                        onClick = { onOpenContact(c.userId) },
                         trailing = if (c.userId in verified) ({ StatusPill("Verified") }) else null,
                     )
                 }
@@ -164,7 +164,7 @@ fun ContactsTab(onOpenChat: (String) -> Unit) {
             }
         }
 
-        if (contacts.isEmpty()) item {
+        if (contacts.none { it.state != ContactState.Removed }) item {
             EmptyState(
                 icon = VynqIcons.Contacts,
                 title = "Your circle starts here",

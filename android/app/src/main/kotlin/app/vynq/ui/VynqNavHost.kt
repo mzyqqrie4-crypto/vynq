@@ -31,6 +31,7 @@ import app.vynq.ui.auth.AuthScreen
 import app.vynq.ui.auth.UsernameScreen
 import app.vynq.ui.main.MainScreen
 import app.vynq.ui.messaging.ChatScreen
+import app.vynq.ui.messaging.ContactInfoScreen
 import app.vynq.ui.messaging.HistorySettingsScreen
 import app.vynq.ui.messaging.RecoveryKeyScreen
 import app.vynq.ui.messaging.RestoreHistoryScreen
@@ -60,8 +61,10 @@ object Routes {
     const val RESTORE_HISTORY = "history/restore"
     const val CHAT = "chat/{peer}"
     const val VERIFY = "chat/{peer}/verify"
+    const val CONTACT = "chat/{peer}/info"
     fun chat(peer: String) = "chat/$peer"
     fun verify(peer: String) = "chat/$peer/verify"
+    fun contact(peer: String) = "chat/$peer/info"
 }
 
 @Composable
@@ -159,7 +162,21 @@ fun VynqNavHost(nav: NavHostController = rememberNavController(), openChat: Stat
         composable(Routes.RESTORE_HISTORY) { RestoreHistoryScreen(onBack = { nav.popBackStack() }) }
         composable(Routes.CHAT) { entry ->
             val peer = entry.arguments?.getString("peer").orEmpty()
-            ChatScreen(peer, onBack = { nav.popBackStack() }, onVerify = { nav.navigate(Routes.verify(peer)) })
+            ChatScreen(peer, onBack = { nav.popBackStack() }, onInfo = { nav.navigate(Routes.contact(peer)) })
+        }
+        composable(Routes.CONTACT) { entry ->
+            val peer = entry.arguments?.getString("peer").orEmpty()
+            ContactInfoScreen(
+                peer,
+                onBack = { nav.popBackStack() },
+                onVerify = { nav.navigate(Routes.verify(peer)) },
+                onGone = { nav.popBackStack(Routes.MAIN, inclusive = false) },
+                onMessage = {
+                    // From a chat's header, go back to it; from Contacts, open it.
+                    if (nav.previousBackStackEntry?.destination?.route == Routes.CHAT) nav.popBackStack()
+                    else nav.navigate(Routes.chat(peer))
+                },
+            )
         }
         composable(Routes.VERIFY) { entry ->
             VerifyScreen(entry.arguments?.getString("peer").orEmpty(), onBack = { nav.popBackStack() })

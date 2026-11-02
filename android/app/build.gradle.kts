@@ -34,8 +34,8 @@ android {
         applicationId = "app.vynq"
         minSdk = 28
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.6.1"
+        versionCode = 8
+        versionName = "0.7.0"
         // libsignal ships large native code per ABI; every phone we target is arm64.
         // (Add "x86_64" here temporarily to run on an emulator.)
         ndk { abiFilters += listOf("arm64-v8a") }

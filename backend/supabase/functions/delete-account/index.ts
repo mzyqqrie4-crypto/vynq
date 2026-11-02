@@ -26,21 +26,23 @@ Deno.serve(async (req) => {
   if (error || !data.user) return json(401, { error: "not_authenticated" });
   const userId = data.user.id;
 
-  // Attachments live under "<user id>/" in the private bucket.
-  const bucket = admin.storage.from("attachments");
-  for (;;) {
-    const { data: files, error: listError } = await bucket.list(userId, { limit: 1000 });
-    if (listError) {
-      console.error("delete-account: storage list failed"); // no user data in logs
-      return json(500, { error: "delete_failed" });
+  // Attachments and profile pictures live under "<user id>/" in their private buckets.
+  for (const name of ["attachments", "avatars"]) {
+    const bucket = admin.storage.from(name);
+    for (;;) {
+      const { data: files, error: listError } = await bucket.list(userId, { limit: 1000 });
+      if (listError) {
+        console.error("delete-account: storage list failed"); // no user data in logs
+        return json(500, { error: "delete_failed" });
+      }
+      if (!files || files.length === 0) break;
+      const { error: removeError } = await bucket.remove(files.map((f) => `${userId}/${f.name}`));
+      if (removeError) {
+        console.error("delete-account: storage remove failed");
+        return json(500, { error: "delete_failed" });
+      }
+      if (files.length < 1000) break;
     }
-    if (!files || files.length === 0) break;
-    const { error: removeError } = await bucket.remove(files.map((f) => `${userId}/${f.name}`));
-    if (removeError) {
-      console.error("delete-account: storage remove failed");
-      return json(500, { error: "delete_failed" });
-    }
-    if (files.length < 1000) break;
   }
 
   const { error: deleteError } = await admin.auth.admin.deleteUser(userId);
