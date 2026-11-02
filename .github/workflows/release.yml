@@ -46,7 +46,12 @@ jobs:
           echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "VYNQ_KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
 
-      - name: Test and build the signed release
+      # Tests run without the backend settings, as in normal CI: with a real server
+      # configured, screens under test start talking to it.
+      - name: Unit tests
+        run: ./gradlew testDebugUnitTest --console=plain -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64
+
+      - name: Build the signed release
         env:
           VYNQ_KEYSTORE_PASSWORD: ${{ secrets.VYNQ_KEYSTORE_PASSWORD }}
           VYNQ_KEY_ALIAS: ${{ secrets.VYNQ_KEY_ALIAS }}
@@ -57,7 +62,7 @@ jobs:
           if [ -z "$VYNQ_SUPABASE_URL" ] || [ -z "$VYNQ_SUPABASE_ANON_KEY" ]; then
             echo "::error::Backend secrets are missing (the app couldn't sign in)"; exit 1
           fi
-          ./gradlew testDebugUnitTest :app:assembleRelease --console=plain -Porg.gradle.java.installations.fromEnv=JAVA_HOME_21_X64
+          ./gradlew :app:assembleRelease --console=plain
 
       - name: Verify the signature and name the file
         run: |
