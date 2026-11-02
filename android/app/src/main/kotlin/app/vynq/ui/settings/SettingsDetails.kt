@@ -190,7 +190,24 @@ fun AboutScreen(onBack: () -> Unit) {
             ListRow("Version", trailing = { Text(BuildConfig.VERSION_NAME, style = VynqTheme.type.numeric, color = c.textSecondary) })
             RowDivider(inset = false)
             ListRow("Build", trailing = { Text(BuildConfig.VERSION_CODE.toString(), style = VynqTheme.type.numeric, color = c.textSecondary) })
+            RowDivider(inset = false)
+            val context = androidx.compose.ui.platform.LocalContext.current
+            ListRow(
+                "Releases and source code", icon = VynqIcons.Info,
+                subtitle = "github.com/mzyqqrie4-crypto/vynq · AGPL-3.0",
+                onClick = {
+                    runCatching {
+                        context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW,
+                            android.net.Uri.parse(app.vynq.data.update.UpdateCheck.RELEASES_URL)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+                    }
+                },
+            )
         }
+        Spacer(Modifier.height(VynqSpacing.sm))
+        Text(
+            "vynq asks GitHub once a day whether a newer version exists. GitHub sees your IP address, nothing else.",
+            style = VynqTheme.type.footnote, color = c.textTertiary, modifier = Modifier.padding(horizontal = VynqSpacing.lg),
+        )
         Spacer(Modifier.height(VynqSpacing.md))
         Text("REAL CONNECTIONS", style = VynqTheme.type.overline, color = c.textTertiary, modifier = Modifier.padding(start = VynqSpacing.lg))
     }

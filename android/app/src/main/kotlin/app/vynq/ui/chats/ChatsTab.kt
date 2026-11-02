@@ -75,6 +75,7 @@ fun ChatsTab(onFindPeople: () -> Unit, onOpenChat: (String) -> Unit, onOpen: (St
             )
             Spacer(Modifier.height(VynqSpacing.sm))
             HistoryBanner(onRestore = { onOpen(Routes.RESTORE_HISTORY) }, onSaveKey = { onOpen(Routes.RECOVERY_KEY) })
+            app.vynq.ui.update.UpdateBanner()
         }
         items(visible, key = { it.contact.userId }) { ConversationRow(it) { onOpenChat(it.contact.userId) } }
         if (visible.isEmpty()) {
