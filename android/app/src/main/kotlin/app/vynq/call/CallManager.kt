@@ -10,7 +10,9 @@ import app.vynq.data.prefs.PreferencesRepository
 import io.livekit.android.room.participant.VideoTrackPublishDefaults
 import io.livekit.android.room.track.LocalVideoTrackOptions
 import io.livekit.android.room.track.VideoCaptureParameter
+import io.livekit.android.room.track.VideoCodec
 import io.livekit.android.room.track.VideoEncoding
+import livekit.org.webrtc.RtpParameters
 import kotlinx.coroutines.flow.first
 import app.vynq.data.auth.BackendApi
 import app.vynq.data.messaging.CallSignal
@@ -259,7 +261,14 @@ class CallManager(
                 dynacast = false,
                 e2eeOptions = E2EEOptions(keyProvider = keyProvider),
                 videoTrackCaptureDefaults = LocalVideoTrackOptions(captureParams = profile.capture),
-                videoTrackPublishDefaults = VideoTrackPublishDefaults(videoEncoding = profile.encoding, simulcast = false),
+                videoTrackPublishDefaults = VideoTrackPublishDefaults(
+                    videoEncoding = profile.encoding,
+                    simulcast = false,
+                    // H.264 runs on the phone's hardware encoder; LiveKit's default VP8 is usually
+                    // software on Android and drops resolution at 1080p.
+                    videoCodec = VideoCodec.H264.codecName,
+                    degradationPreference = profile.degradation,
+                ),
             ),
         )
         room = r
@@ -407,13 +416,21 @@ class CallManager(
  * lowers resolution and bitrate on its own when the network can't keep up.
  * (Phase 5 measures these against real networks and tunes them.)
  */
-data class CallProfile(val capture: VideoCaptureParameter, val encoding: VideoEncoding) {
+data class CallProfile(
+    val capture: VideoCaptureParameter,
+    val encoding: VideoEncoding,
+    /** What gives way when the network or encoder can't keep up: sharpness or smoothness. */
+    val degradation: RtpParameters.DegradationPreference,
+) {
     companion object {
+        private val Balanced = RtpParameters.DegradationPreference.BALANCED
+        private val KeepSharp = RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
+
         fun of(q: CallQuality): CallProfile = when (q) {
-            CallQuality.DataSaver -> CallProfile(VideoCaptureParameter(640, 360, 24), VideoEncoding(500_000, 24))
-            CallQuality.Automatic -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(2_500_000, 30))
-            CallQuality.High -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(4_000_000, 30))
-            CallQuality.Maximum -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(6_000_000, 30))
+            CallQuality.DataSaver -> CallProfile(VideoCaptureParameter(640, 360, 24), VideoEncoding(500_000, 24), Balanced)
+            CallQuality.Automatic -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(3_500_000, 30), Balanced)
+            CallQuality.High -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(5_000_000, 30), KeepSharp)
+            CallQuality.Maximum -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(8_000_000, 30), KeepSharp)
         }
     }
 }

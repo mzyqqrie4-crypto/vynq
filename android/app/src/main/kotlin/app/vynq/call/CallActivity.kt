@@ -44,6 +44,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.vynq.BuildConfig
 import app.vynq.container
 import app.vynq.designsystem.component.pressable
 import app.vynq.designsystem.icon.VynqIcons
@@ -274,7 +275,13 @@ private fun StatsPanel(room: Room) {
     var stats by remember { mutableStateOf(CallStats()) }
     LaunchedEffect(room) {
         val sampler = StatsSampler(room)
-        while (true) { stats = sampler.sample(); delay(1000) }
+        var n = 0
+        while (true) {
+            stats = sampler.sample()
+            // Debug builds: what the call really sends and receives, for tuning (numbers only).
+            if (BuildConfig.DEBUG && n++ % 10 == 5) android.util.Log.i("vynq.call", "stats: " + stats.lines().joinToString(" | "))
+            delay(1000)
+        }
     }
     Column(
         Modifier.background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(12.dp)).padding(VynqSpacing.md),
