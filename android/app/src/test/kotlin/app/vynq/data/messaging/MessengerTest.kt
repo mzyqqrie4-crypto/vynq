@@ -546,4 +546,19 @@ class MessengerTest {
         assertNull(b.messenger.avatar(alice))
         assertTrue(server.blobs.keys.none { it.startsWith("avatars/") })       // old file deleted
     }
+
+    @Test fun `a nickname set before history is unlocked is backed up once it is`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        a.messenger.start(); b.messenger.start()
+        connect(a, b, "bob")
+        val a2 = Phone(server, alice, this); a2.messenger.start()             // locked: history not handed over yet
+        a2.messenger.setNickname(bob, "B")
+        assertTrue(server.history.none { it.third.first.startsWith("nick:") })
+        assertTrue(a2.messenger.unlockWithRecoveryKey(a.messenger.recoveryKeyText()!!))
+        assertTrue(server.history.any { it.third.first.startsWith("nick:") }) // went up after unlocking
+        val a3 = Phone(server, alice, this); a3.messenger.start()
+        assertTrue(a3.messenger.unlockWithRecoveryKey(a.messenger.recoveryKeyText()!!))
+        a3.messenger.refreshContacts()
+        assertEquals("B", a3.dao.contact(bob)!!.label)
+    }
 }

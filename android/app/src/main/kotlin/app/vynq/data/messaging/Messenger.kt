@@ -207,13 +207,8 @@ class Messenger(
     /** A private name for a contact that only this account sees, on all its phones. Blank clears it. */
     suspend fun setNickname(peer: String, nickname: String?) {
         val name = nickname?.trim()?.take(40)?.takeIf { it.isNotEmpty() }
-        withContext(io) { dao.setNickname(peer, name) }
-        historyKey()?.let { hk ->
-            runCatching {
-                appendHistory(hk, listOf(HistoryRecord(id = "$NICK_PREFIX$peer:${now()}", peer = peer, outgoing = true,
-                    kind = MessageKind.System, text = name, sentAt = now())))
-            }
-        }
+        withContext(io) { dao.setNickname(peer, name); dao.put(NS_NICK_PENDING, peer, byteArrayOf(1)) }
+        runCatching { backUpSettings() }
         runCatching { locked { sendControl(syncDevices(userId), control(CONTROL_NICKNAME).copy(syncPeer = peer, text = name)) } }
     }
 
@@ -226,13 +221,8 @@ class Messenger(
     private suspend fun ensureProfileKey(): ByteArray {
         ownProfileKey()?.let { return it }
         val pk = ProfileCrypto.newKey()
-        withContext(io) { dao.put(NS_PROFILE, "key", pk) }
-        historyKey()?.let { hk ->
-            runCatching {
-                appendHistory(hk, listOf(HistoryRecord(id = "$PK_PREFIX${now()}", peer = userId, outgoing = true,
-                    kind = MessageKind.System, text = b64.encodeToString(pk), sentAt = now())))
-            }
-        }
+        withContext(io) { dao.put(NS_PROFILE, "key", pk); dao.delete(NS_PROFILE, "key_backed_up") }
+        runCatching { backUpSettings() }
         return pk
     }
 
@@ -278,6 +268,33 @@ class Messenger(
         val pk = ownProfileKey() ?: run { profileShares.clear(); return }
         val users = synchronized(profileShares) { profileShares.toList().also { profileShares.clear() } }
         for (u in users) runCatching { locked { sendControl(syncDevices(u), control(CONTROL_PROFILE).copy(profileKey = b64.encodeToString(pk))) } }
+    }
+
+    /**
+     * Nicknames and the profile key go into the encrypted history too, so a new phone
+     * gets them. If this phone can't write history yet (not unlocked), they wait here
+     * and go up as soon as it can.
+     */
+    private suspend fun backUpSettings() {
+        val hk = historyKey() ?: return
+        val records = withContext(io) {
+            buildList {
+                dao.keys(NS_NICK_PENDING).forEach { peer ->
+                    add(HistoryRecord(id = "$NICK_PREFIX$peer:${now()}", peer = peer, outgoing = true,
+                        kind = MessageKind.System, text = dao.get(ContactLocal.NS_NICKNAME, peer)?.decodeToString(), sentAt = now()))
+                }
+                val pk = ownProfileKey()
+                if (pk != null && dao.get(NS_PROFILE, "key_backed_up") == null) {
+                    add(HistoryRecord(id = "$PK_PREFIX${now()}", peer = userId, outgoing = true,
+                        kind = MessageKind.System, text = b64.encodeToString(pk), sentAt = now()))
+                }
+            }
+        }
+        if (records.isEmpty()) return
+        appendHistory(hk, records)
+        withContext(io) {
+            records.forEach { r -> if (r.id.startsWith(NICK_PREFIX)) dao.delete(NS_NICK_PENDING, r.peer) else dao.put(NS_PROFILE, "key_backed_up", byteArrayOf(1)) }
+        }
     }
 
     private fun adoptPeerProfileKey(user: String, encoded: String) {
@@ -662,7 +679,7 @@ class Messenger(
             }
             CONTROL_CHAT_DELETE -> p.syncPeer?.let { peer -> withContext(io) { dao.deleteMessages(peer) } }
             CONTROL_PROFILE -> p.profileKey?.let { runCatching { unb64.decode(it) }.getOrNull() }?.takeIf { it.size == 32 }?.let { pk ->
-                withContext(io) { dao.put(NS_PROFILE, "key", pk); dao.delete(NS_AVATAR_LOADED, userId) }
+                withContext(io) { dao.put(NS_PROFILE, "key", pk); dao.put(NS_PROFILE, "key_backed_up", byteArrayOf(1)); dao.delete(NS_AVATAR_LOADED, userId) }
             }
             CONTROL_HISTORY_KEY -> if (historyKey() == null) {
                 val hk = p.historyKey?.let(unb64::decode)?.takeIf { it.size == 32 } ?: return
@@ -714,7 +731,7 @@ class Messenger(
                     if (id.startsWith(NICK_PREFIX)) { dao.setNickname(record.peer, record.text); continue }
                     if (id.startsWith(PK_PREFIX)) {
                         record.text?.let { runCatching { unb64.decode(it) }.getOrNull() }?.takeIf { it.size == 32 }
-                            ?.let { dao.put(NS_PROFILE, "key", it) }
+                            ?.let { dao.put(NS_PROFILE, "key", it); dao.put(NS_PROFILE, "key_backed_up", byteArrayOf(1)) }
                         continue
                     }
                     dao.insertMessage(Message(record.id, record.peer, record.outgoing, record.kind, record.text,
@@ -732,6 +749,7 @@ class Messenger(
     private suspend fun archivePending() {
         applyPendingKey()
         val hk = historyKey() ?: return
+        runCatching { backUpSettings() }
         while (true) {
             val batch = withContext(io) { dao.unarchived(100) }
                 .filter { it.status != MessageStatus.Sending && it.status != MessageStatus.Failed }
@@ -816,6 +834,7 @@ class Messenger(
         private const val NS_AVATAR = "avatar"
         private const val NS_AVATAR_LOADED = "avatar_loaded"
         private const val NICK_PREFIX = "nick:"
+        private const val NS_NICK_PENDING = "nickname_pending"
         private const val PK_PREFIX = "pk:"
         private val KEEPABLE = setOf(ContactState.Accepted, ContactState.Removed)
         const val CONTROL_HISTORY_KEY = "history_key"
