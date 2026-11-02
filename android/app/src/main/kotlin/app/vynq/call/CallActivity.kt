@@ -45,6 +45,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.vynq.BuildConfig
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import app.vynq.container
 import app.vynq.designsystem.component.pressable
 import app.vynq.designsystem.icon.VynqIcons
@@ -209,7 +211,13 @@ private fun SecurityBadge(s: CallState) {
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
         LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
         val secs = ((now - (s.connectedAt ?: now)) / 1000).coerceAtLeast(0)
-        Text("%d:%02d".format(secs / 60, secs % 60), style = VynqTheme.type.callout, color = Color.White)
+        val calls = androidx.compose.ui.platform.LocalContext.current.container.calls
+        Text(
+            "%d:%02d".format(secs / 60, secs % 60), style = VynqTheme.type.callout, color = Color.White,
+            modifier = Modifier.pointerInput(Unit) {
+                detectTapGestures(onLongPress = { calls.debugStepDown() })   // no-op outside debug builds
+            },
+        )
         Spacer(Modifier.height(4.dp))
     }
     if (s.phase == CallPhase.Connected || s.phase == CallPhase.Reconnecting) {
@@ -220,6 +228,14 @@ private fun SecurityBadge(s: CallState) {
             Spacer(Modifier.size(4.dp))
             Text(if (s.endToEnd) "End-to-end encrypted" else "Encrypted in transit",
                 style = VynqTheme.type.caption, color = if (s.endToEnd) Color(0xFF34D399) else Color.White.copy(alpha = 0.7f))
+        }
+    }
+    s.heatNotice?.let {
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(VynqIcons.Warning, null, Modifier.size(12.dp), tint = Color(0xFFFBBF24))
+            Spacer(Modifier.size(4.dp))
+            Text(it, style = VynqTheme.type.caption, color = Color(0xFFFBBF24))
         }
     }
 }

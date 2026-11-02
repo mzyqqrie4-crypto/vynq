@@ -46,8 +46,9 @@ class StatsSampler(private val room: Room) {
         val inbound = sub?.statsMap?.values?.filter { it.type == "inbound-rtp" && it.members["kind"] == "video" }.orEmpty()
         val inVideo = inbound.maxByOrNull { (it.members["bytesReceived"] as? Number)?.toLong() ?: 0 }
         val inBytes = sub?.statsMap?.values?.filter { it.type == "inbound-rtp" }?.sumOf { (it.members["bytesReceived"] as? Number)?.toLong() ?: 0 } ?: 0
+        // Live stream = the one still sending (a stopped one stays in the stats after a camera restart).
         val outVideo = pub?.statsMap?.values?.filter { it.type == "outbound-rtp" && it.members["kind"] == "video" }
-            ?.maxByOrNull { ((it.members["frameWidth"] as? Number)?.toLong() ?: 0) }
+            ?.maxByOrNull { ((it.members["framesPerSecond"] as? Number)?.toDouble() ?: 0.0) }
         val outBytes = pub?.statsMap?.values?.filter { it.type == "outbound-rtp" }?.sumOf { (it.members["bytesSent"] as? Number)?.toLong() ?: 0 } ?: 0
 
         val recvKbps = if (secs > 0) ((inBytes - lastRecvBytes) * 8 / 1000 / secs).toLong().coerceAtLeast(0) else null
@@ -88,10 +89,13 @@ class StatsSampler(private val room: Room) {
         return "${w}×$h"
     }
 
-    private suspend fun report(fetch: (livekit.org.webrtc.RTCStatsCollectorCallback) -> Unit): RTCStatsReport? =
-        withTimeoutOrNull(2_000) {
-            suspendCancellableCoroutine { cont ->
-                runCatching { fetch { r -> if (cont.isActive) cont.resume(r) } }.onFailure { if (cont.isActive) cont.resume(null) }
-            }
-        }
+    private suspend fun report(fetch: (livekit.org.webrtc.RTCStatsCollectorCallback) -> Unit) = rtcReport(fetch)
 }
+
+/** One WebRTC stats report, or null if it doesn't come within 2 s. */
+suspend fun rtcReport(fetch: (livekit.org.webrtc.RTCStatsCollectorCallback) -> Unit): RTCStatsReport? =
+    withTimeoutOrNull(2_000) {
+        suspendCancellableCoroutine { cont ->
+            runCatching { fetch { r -> if (cont.isActive) cont.resume(r) } }.onFailure { if (cont.isActive) cont.resume(null) }
+        }
+    }

@@ -15,6 +15,8 @@ import io.livekit.android.room.track.VideoEncoding
 import livekit.org.webrtc.RtpParameters
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
+import android.os.Build
+import android.os.PowerManager
 import kotlinx.coroutines.sync.withLock
 import app.vynq.data.auth.BackendApi
 import app.vynq.data.messaging.CallSignal
@@ -68,6 +70,8 @@ data class CallState(
     val remoteVideo: VideoTrack? = null,
     /** The other person turned their camera off. */
     val remoteCameraOff: Boolean = false,
+    /** Set when the phone got too hot and vynq lowered the video quality. */
+    val heatNotice: String? = null,
 )
 
 /**
@@ -101,6 +105,11 @@ class CallManager(
     /** Caller's camera before the answer: shown to the caller, not sent yet. */
     private var preview: LocalVideoTrack? = null
     private val cameraLock = Mutex()
+    /** What the camera is sending now (index into CallProfile.Levels). */
+    private var sendLevel: Int? = null
+    private var metrics: CallMetrics? = null
+    private var heatJob: Job? = null
+    private var thermalListener: PowerManager.OnThermalStatusChangedListener? = null
     private var roomJob: Job? = null
     private var timeout: Job? = null
     private val trackE2ee = mutableMapOf<String, E2EEState>()
@@ -369,6 +378,19 @@ class CallManager(
 
     private fun markConnected() {
         timeout?.cancel()
+        val r = room
+        val s = _state.value
+        if (r != null && s != null && s.phase != CallPhase.Connected) {
+            if (BuildConfig.DEBUG && metrics == null) {
+                metrics = CallMetrics(context, r, scope).also { m ->
+                    scope.launch {
+                        val level = sendLevel?.let { CallProfile.Levels[it].title } ?: prefs.callQuality.first().title
+                        m.start(s.video, level, VideoCodecs.choose(peerCodecs))
+                    }
+                }
+            }
+            if (s.video) watchHeat()
+        }
         _state.update {
             if (it == null || it.phase == CallPhase.Connected) it
             else it.copy(phase = CallPhase.Connected, connectedAt = it.connectedAt ?: System.currentTimeMillis())
@@ -405,18 +427,67 @@ class CallManager(
 
     private suspend fun publishCamera(r: Room): Boolean {
         val codec = VideoCodecs.choose(peerCodecs)
-        val maximum = prefs.callQuality.first() == CallQuality.Maximum
-        val qhd = VideoSize.send1440(maximum, peerScreen) { VideoSize.deviceCan1440(context, codec) }
-        if (qhd) {
-            r.videoTrackCaptureDefaults = r.videoTrackCaptureDefaults.copy(captureParams = CallProfile.Qhd.capture)
-            r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(
-                videoEncoding = CallProfile.Qhd.encoding)
-        }
-        r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(videoCodec = codec)
+        val quality = prefs.callQuality.first()
+        val qhd = VideoSize.send1440(quality == CallQuality.Maximum, peerScreen) { VideoSize.deviceCan1440(context, codec) }
+        val level = sendLevel ?: if (qhd) CallProfile.Levels.lastIndex else CallProfile.Levels.indexOfFirst { it.quality == quality }
+        sendLevel = level
+        val profile = CallProfile.Levels[level].profile
+        r.videoTrackCaptureDefaults = r.videoTrackCaptureDefaults.copy(captureParams = profile.capture)
+        r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(videoEncoding = profile.encoding, videoCodec = codec)
         val ok = runCatching { r.localParticipant.setCameraEnabled(true) }.getOrDefault(false)
-        Log.i(TAG, "camera sent as $codec ${if (qhd) "1440p" else "up to 1080p"} (they decode ${peerCodecs ?: "unknown"}, screen ${peerScreen ?: "unknown"}): $ok")
+        Log.i(TAG, "camera sent as $codec ${profile.capture.width}x${profile.capture.height} (they decode ${peerCodecs ?: "unknown"}, screen ${peerScreen ?: "unknown"}): $ok")
         _state.update { it?.copy(localVideo = localVideoTrack()) }
         return ok
+    }
+
+    /**
+     * Owner decision (Phase 5): quality is the user's, except when Android reports
+     * severe heat, just before it throttles or shuts the phone down. Then step the
+     * camera down one level, say so on the call screen, and step again every 2 min
+     * while it stays that hot.
+     */
+    private fun watchHeat() {
+        if (Build.VERSION.SDK_INT < 29 || thermalListener != null) return
+        val power = context.getSystemService(PowerManager::class.java)
+        val listener = PowerManager.OnThermalStatusChangedListener { status ->
+            if (status >= PowerManager.THERMAL_STATUS_SEVERE && heatJob?.isActive != true) {
+                heatJob = scope.launch {
+                    while (power.currentThermalStatus >= PowerManager.THERMAL_STATUS_SEVERE && room != null) {
+                        if (!cameraLock.withLock { stepDown() }) break
+                        delay(120_000)
+                    }
+                }
+            }
+        }
+        power.addThermalStatusListener(context.mainExecutor, listener)
+        thermalListener = listener
+    }
+
+    /** One level down (republishes the camera); false when already at the lowest. */
+    private suspend fun stepDown(): Boolean {
+        val r = room ?: return false
+        val now = sendLevel ?: return false
+        if (now == 0) return false
+        val next = now - 1
+        sendLevel = next
+        val cameraOn = _state.value?.cameraOn == true
+        localVideoTrack()?.let { r.localParticipant.unpublishTrack(it, true) }
+        if (cameraOn) {
+            publishCamera(r)
+            // Some cameras (the realme's front camera) keep their last capture size on a new
+            // track; set it explicitly so the step-down really sends fewer pixels.
+            val c = CallProfile.Levels[next].profile.capture
+            localVideoTrack()?.capturer?.changeCaptureFormat(c.width, c.height, c.maxFps)
+        }
+        val title = CallProfile.Levels[next].title
+        Log.i(TAG, "phone too hot (thermal ${if (Build.VERSION.SDK_INT >= 29) context.getSystemService(PowerManager::class.java).currentThermalStatus else -1}): video lowered to $title")
+        _state.update { it?.copy(heatNotice = "Your phone is very hot, so video was lowered to $title.") }
+        return true
+    }
+
+    /** Debug builds: run the heat step-down on demand (long-press the call timer) to test it. */
+    fun debugStepDown() {
+        if (BuildConfig.DEBUG) scope.launch { cameraLock.withLock { stepDown() } }
     }
 
     private fun localVideoTrack(): LocalVideoTrack? =
@@ -442,6 +513,11 @@ class CallManager(
         peerCodecs = null
         peerScreen = null
         answered = false
+        sendLevel = null
+        metrics?.stop(); metrics = null
+        heatJob?.cancel(); heatJob = null
+        if (Build.VERSION.SDK_INT >= 29) thermalListener?.let { context.getSystemService(PowerManager::class.java).removeThermalStatusListener(it) }
+        thermalListener = null
         preview?.let { p -> runCatching { p.stop(); p.dispose() } }
         preview = null
         trackE2ee.clear()
@@ -506,5 +582,17 @@ data class CallProfile(val capture: VideoCaptureParameter, val encoding: VideoEn
 
         /** Maximum, when both phones allow it (VideoSize.send1440). */
         val Qhd = CallProfile(VideoCaptureParameter(2560, 1440, 30), VideoEncoding(12_000_000, 30))
+
+        /** Lowest to highest, for the heat step-down. */
+        val Levels: List<Level> = listOf(
+            Level(CallQuality.DataSaver, CallQuality.DataSaver.title, of(CallQuality.DataSaver)),
+            Level(CallQuality.Automatic, CallQuality.Automatic.title, of(CallQuality.Automatic)),
+            Level(CallQuality.High, CallQuality.High.title, of(CallQuality.High)),
+            Level(CallQuality.Maximum, "Maximum (1080p)", of(CallQuality.Maximum)),
+            Level(null, "Maximum (1440p)", Qhd),
+        )
+    }
+
+    data class Level(val quality: CallQuality?, val title: String, val profile: CallProfile) {
     }
 }

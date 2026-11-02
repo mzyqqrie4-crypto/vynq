@@ -1,5 +1,53 @@
 # vynq development log
 
+## 2026-11-02: Phase 5 — video quality, partly measured (branch `phase5/video-quality`)
+
+Written up at the owner's request with most measurements still missing; Phase 5 is **not done** by the roadmap's definition.
+
+**Implemented**
+- Already on `main` from Phase 4 work: codec per direction (AV1 → H.265 → H.264, hardware encoders only), one stream per direction (no simulcast: 1:1 calls), quality profiles in Settings → Call quality (Data saver 360p/0.5 Mbps, Automatic 1080p/3.5, High 1080p/5, Maximum 1080p/8 or 1440p/12 when both phones allow it), resolution kept for the whole call (owner decision after adaptive downscaling started calls at ~540p).
+- **Heat step-down** (owner decision): quality stays as chosen unless Android reports thermal status **severe** or worse. Then the camera goes down one level (Maximum 1440p → Maximum 1080p → High → Automatic → Data saver), the call screen says "Your phone is very hot, so video was lowered to …", and it steps again every 2 min while the phone stays that hot. Restarting the camera costs a 3–6 s video pause.
+- **Measurements** (debug builds only): `CallMetrics` writes one CSV row per second per call — resolution, fps, bitrate, freeze count/duration, frames dropped, loss, jitter and round trip both ways, codecs, Android thermal status, battery temperature and level. Numbers only. `tools/call_report.py` turns the files into the table below. The files from today are in `docs/measurements/phase5/`.
+- Fixes found while measuring: after a camera restart the recorder and the Details panel read the stopped stream (stale resolution, a negative bitrate); they now follow the stream that is still sending. The realme's front camera kept its 2560×1440 capture on a new track, so the step-down now sets the capture size explicitly. Debug builds can trigger the step-down by long-pressing the call timer.
+
+**Tested (executed)**
+- Android: 77/77 JVM tests (2 new: heat levels ordered by bitrate, every quality setting has a level).
+- Calls on the two phones, same Wi-Fi (rows are what each phone **received** and **sent**; averages leave out the first 10 s):
+
+| Call | Phone | Quality | Min | Recv res | Recv fps (avg / p10) | Recv kbps | Freezes (n / s) | Loss % | RTT ms | Send res | Send fps | Send kbps | Codec | Max thermal | Battery °C |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| A | realme | Maximum | 3.7 | 1080×1920 | 27 / 22 | 1546 | 37 / 27.9 | 1.8 | 103 | 1440×2560 | 27 | 345 | H.265 | 3 (severe) | 32.7→36.5 |
+| A | Xiaomi | Maximum | 3.7 | 1440×2560 | 27 / 21 | 350 | 23 / 23.3 | 1.3 | 74 | 1080×1920 | 27 | 1576 | H.265 | 0 | 39.4→40.8 |
+| Step-down | realme | Maximum | 0.6 | 1080×1920 | 31 / 28 | 2114 | 5 / 2.6 | 1.3 | 107 | 1440→1080 | 17 | 1131 | H.265 | 0 | 32.8→33.5 |
+| Step-down | Xiaomi | Maximum | 0.6 | 1440→1080 | 17 / 15 | 1121 | 3 / 1.6 | 0.5 | 76 | 1080×1920 | 30 | 2280 | H.265 | 0 | 36.3 |
+| C | realme | Automatic | 0.5 | 1080×1920 | 28 / 24 | 1384 | 5 / 1.8 | 3.8 | 108 | 1080×1920 | 17 | 1550 | H.265 | 0 | 33.5 |
+| C | Xiaomi | Automatic | 0.5 | 1080×1920 | 16 / 15 | 1545 | 7 / 2.5 | 4.6 | 101 | 1080×1920 | 30 | 1412 | H.265 | 0 | 35.4 |
+
+- What the numbers say:
+  - **Freezes come mostly from this network.** In test A both phones stalled at the same moments (round trip jumping above 400 ms, sending falling to 1–2 fps), and loss stayed at 1–5 %. The realme's upload started at 200–400 kbps for 1440p and took ~90 s to climb, so 1440p from the realme was mostly starved.
+  - **The realme hits Android's "severe" thermal status within ~2.5 min at 1440p** (battery only 36.5 °C). The step-down fired; in that build it didn't actually lower the camera (fixed and then verified: 1440×2560 → 1080×1920 on the receiving Xiaomi).
+  - **The realme's camera delivers ~17 fps at 1080p** in this room (encoder input, not the network), likely low light; the Xiaomi sends a steady 30.
+  - A voice call (1.7 min) was also recorded: round trip 68–86 ms, no video.
+- Camera and microphone release after hang-up (from Phase 4) holds for every call above.
+
+**Phase 5 acceptance (docs/04-roadmap.md)**
+| Criterion | Result |
+|---|---|
+| Measured table: received resolution/fps/bitrate/freeze count per network condition | ⚠️ Wi-Fi only (table above); mobile data not measured |
+| … vs. baseline app | ⬜ skipped (owner decision: WhatsApp isn't on the Xiaomi) |
+| No thermal shutdown in a 30-min call | ⬜ not run (longest call 3.7 min); the heat step-down exists and is verified |
+| Profiles change measurable bitrate | ⬜ only Automatic and Maximum measured, on short calls with different network moments; Data saver and High not run |
+
+**Not verified / known gaps**
+- No mobile-data, weak-signal or handover measurements; no long call; no battery drain figure (the Xiaomi was likely charging; the realme's calls were too short).
+- Freeze counts are WebRTC's (`freezeCount`), not a viewer's judgement.
+- Codec evaluation is limited to what these two phones can encode in hardware (H.265, H.264); AV1 is wired up but no test phone has a hardware AV1 encoder.
+- Thermal adaptation steps down only on Android's "severe" signal (owner decision); there's no battery-based adaptation.
+
+**Blockers:** none.
+
+**Next action:** you review and merge the Phase 5 PR; the missing measurements (Data saver/High, mobile data, 30-min call, optional WhatsApp baseline) can be run on this branch's tooling at any time and added to `docs/measurements/`.
+
 ## 2026-11-02: Phase 4 — 1:1 calls (branch `phase4/calls`)
 
 **Implemented**

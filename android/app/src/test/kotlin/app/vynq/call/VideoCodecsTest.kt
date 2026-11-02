@@ -40,3 +40,17 @@ class VideoSizeTest {
         assertEquals(false, VideoSize.send1440(maximum = true, peerScreen = 1440) { false }) // camera/encoder can't
     }
 }
+
+class CallProfileTest {
+    @Test fun heatStepDownLevelsGoFromLeastToMostData() {
+        val rates = CallProfile.Levels.map { it.profile.encoding.maxBitrate }
+        assertEquals(rates.sorted(), rates)
+        assertEquals(rates.size, rates.distinct().size)
+    }
+
+    @Test fun everyQualitySettingHasALevel() {
+        app.vynq.data.prefs.CallQuality.entries.forEach { q ->
+            assertEquals(true, CallProfile.Levels.any { it.quality == q })
+        }
+    }
+}
