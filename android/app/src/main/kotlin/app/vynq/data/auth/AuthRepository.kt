@@ -61,10 +61,17 @@ interface BackendApi {
     /** Realtime websocket endpoint, without credentials beyond the public key. */
     val realtimeUrl: String
     suspend fun rpc(function: String, args: JsonObject): JsonElement
-    suspend fun upload(path: String, bytes: ByteArray)
+    suspend fun upload(path: String, bytes: ByteArray, bucket: String = ATTACHMENTS)
     /** Calls a signed-in Edge Function with a JSON body. */
     suspend fun function(name: String, args: JsonObject): JsonElement
-    suspend fun download(path: String): ByteArray
+    suspend fun download(path: String, bucket: String = ATTACHMENTS): ByteArray
+    /** Deletes one of the user's own files. */
+    suspend fun remove(path: String, bucket: String = ATTACHMENTS)
+
+    companion object {
+        const val ATTACHMENTS = "attachments"
+        const val AVATARS = "avatars"
+    }
 }
 
 /** One backend usually provides all three. */
@@ -105,9 +112,10 @@ class UnconfiguredAuthRepository : AccountService {
     override val deviceName = ""
     override val realtimeUrl = ""
     override suspend fun rpc(function: String, args: JsonObject): JsonElement = throw AccountError.NotConfigured()
-    override suspend fun upload(path: String, bytes: ByteArray) = throw AccountError.NotConfigured()
+    override suspend fun upload(path: String, bytes: ByteArray, bucket: String) = throw AccountError.NotConfigured()
     override suspend fun function(name: String, args: JsonObject): JsonElement = throw AccountError.NotConfigured()
-    override suspend fun download(path: String): ByteArray = throw AccountError.NotConfigured()
+    override suspend fun download(path: String, bucket: String): ByteArray = throw AccountError.NotConfigured()
+    override suspend fun remove(path: String, bucket: String) = throw AccountError.NotConfigured()
 }
 
 object EmailValidator {

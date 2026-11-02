@@ -19,6 +19,10 @@ interface MessagingDao : CryptoStorage {
     fun contact(userId: String): Contact?
     /** Replaces the contact list with the server's. */
     fun replaceContacts(contacts: List<Contact>)
+    /** A private nickname for a contact; null clears it. */
+    fun setNickname(userId: String, nickname: String?)
+    /** Where a user's encrypted profile picture is stored; null when they have none. */
+    fun setAvatarPath(userId: String, path: String?)
 
     fun devices(userId: String): List<RemoteDevice>
     fun device(deviceId: String): RemoteDevice?
@@ -37,6 +41,8 @@ interface MessagingDao : CryptoStorage {
     /** Text and photo messages not yet in the account's encrypted history, oldest first. */
     fun unarchived(limit: Int): List<Message>
     fun markArchived(ids: Collection<String>)
+    /** Deletes one conversation's messages from this phone. */
+    fun deleteMessages(peer: String)
 }
 
 class MemoryMessagingDao : MessagingDao, CryptoStorage by MemoryCryptoStorage() {
@@ -47,8 +53,19 @@ class MemoryMessagingDao : MessagingDao, CryptoStorage by MemoryCryptoStorage() 
     private val order = ConcurrentHashMap<String, Long>() // insertion order breaks timestamp ties, like rowid
     private fun bump() { changes.value++ }
 
-    override fun contacts() = contacts.values.sortedBy { it.label }
-    override fun contact(userId: String) = contacts[userId]
+    override fun contacts() = contacts.values.map { withLocal(it) }.sortedBy { it.label }
+    override fun contact(userId: String) = contacts[userId]?.let(::withLocal)
+    override fun setNickname(userId: String, nickname: String?) = setLocal(ContactLocal.NS_NICKNAME, userId, nickname)
+    override fun setAvatarPath(userId: String, path: String?) = setLocal(ContactLocal.NS_AVATAR_PATH, userId, path)
+    private fun withLocal(c: Contact) = c.copy(
+        nickname = get(ContactLocal.NS_NICKNAME, c.userId)?.decodeToString(),
+        avatarPath = get(ContactLocal.NS_AVATAR_PATH, c.userId)?.decodeToString(),
+    )
+    private fun setLocal(ns: String, key: String, value: String?) {
+        if (get(ns, key)?.decodeToString() == value) return
+        if (value == null) delete(ns, key) else put(ns, key, value.encodeToByteArray())
+        bump()
+    }
     override fun replaceContacts(contacts: List<Contact>) {
         this.contacts.clear(); contacts.forEach { this.contacts[it.userId] = it }; bump()
     }
@@ -82,8 +99,11 @@ class MemoryMessagingDao : MessagingDao, CryptoStorage by MemoryCryptoStorage() 
     override fun markArchived(ids: Collection<String>) {
         ids.forEach { id -> messages.computeIfPresent(id) { _, m -> m.copy(archived = true) } }
     }
+    override fun deleteMessages(peer: String) {
+        messages.values.removeIf { it.peer == peer }; bump()
+    }
     override fun conversations() = contacts.values.mapNotNull { c ->
         val list = messages(c.userId)
-        if (list.isEmpty()) null else Conversation(c, list.last(), list.count { !it.read })
+        if (list.isEmpty()) null else Conversation(withLocal(c), list.last(), list.count { !it.read })
     }.sortedByDescending { it.last?.sentAt }
 }

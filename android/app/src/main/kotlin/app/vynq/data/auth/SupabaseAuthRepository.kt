@@ -175,13 +175,17 @@ class SupabaseAuthRepository(
         if (body.isBlank()) JsonNull else json.parseToJsonElement(body)
     }.getOrThrow()
 
-    override suspend fun upload(path: String, bytes: ByteArray) = authed<Unit> { token ->
-        send(Request.Builder().url("$base/storage/v1/object/attachments/$path")
+    override suspend fun upload(path: String, bytes: ByteArray, bucket: String) = authed<Unit> { token ->
+        send(Request.Builder().url("$base/storage/v1/object/$bucket/$path")
             .post(bytes.toRequestBody(BLOB_TYPE)).withAuth(token).build())
     }.getOrThrow()
 
-    override suspend fun download(path: String): ByteArray = authed { token ->
-        send(Request.Builder().url("$base/storage/v1/object/attachments/$path").get().withAuth(token).build())
+    override suspend fun download(path: String, bucket: String): ByteArray = authed { token ->
+        send(Request.Builder().url("$base/storage/v1/object/$bucket/$path").get().withAuth(token).build())
+    }.getOrThrow()
+
+    override suspend fun remove(path: String, bucket: String) = authed<Unit> { token ->
+        send(Request.Builder().url("$base/storage/v1/object/$bucket/$path").delete().withAuth(token).build())
     }.getOrThrow()
 
     override suspend fun deleteAccount(): Result<Unit> = authed { token ->

@@ -51,7 +51,21 @@ class SqlCipherMessagingDao private constructor(private val db: SQLiteDatabase) 
         }
     }
 
-    private fun Cursor.contact() = Contact(str("user_id")!!, str("username"), str("display_name"), ContactState.valueOf(str("state")!!))
+    private fun Cursor.contact(): Contact {
+        val id = str("user_id")!!
+        return Contact(id, str("username"), str("display_name"), ContactState.valueOf(str("state")!!),
+            nickname = get(ContactLocal.NS_NICKNAME, id)?.decodeToString(),
+            avatarPath = get(ContactLocal.NS_AVATAR_PATH, id)?.decodeToString())
+    }
+
+    override fun setNickname(userId: String, nickname: String?) = setLocal(ContactLocal.NS_NICKNAME, userId, nickname)
+    override fun setAvatarPath(userId: String, path: String?) = setLocal(ContactLocal.NS_AVATAR_PATH, userId, path)
+
+    private fun setLocal(ns: String, key: String, value: String?) {
+        if (get(ns, key)?.decodeToString() == value) return
+        if (value == null) delete(ns, key) else put(ns, key, value.encodeToByteArray())
+        bump()
+    }
 
     // --- devices -----------------------------------------------------------------------------
 
@@ -109,6 +123,11 @@ class SqlCipherMessagingDao private constructor(private val db: SQLiteDatabase) 
             ids.forEach { db.execSQL("update messages set archived = 1 where id = ?", arrayOf<Any>(it)) }
             db.setTransactionSuccessful()
         } finally { db.endTransaction() }
+    }
+
+    override fun deleteMessages(peer: String) {
+        db.execSQL("delete from messages where peer = ?", arrayOf<Any>(peer))
+        bump()
     }
 
     override fun conversations(): List<Conversation> {
