@@ -70,7 +70,38 @@ data class WirePayload(
     val historyKey: String? = null,
     val recoveryKey: String? = null,
     val deviceName: String? = null,
+    /** Call signalling (control = call_*): the call, video or voice, and the media key. */
+    val callId: String? = null,
+    val video: Boolean? = null,
+    val callKey: String? = null,
+    val reason: String? = null,
+    /** Video formats the sending phone can decode (invite and answer); see VideoCodecs. */
+    val codecs: List<String>? = null,
+    /** Short side of the sending phone's screen in pixels (invite and answer); see VideoSize. */
+    val screen: Int? = null,
 )
+
+/** A call signal from a contact (or from one of our own phones, e.g. "answered elsewhere"). */
+data class CallSignal(
+    val type: String,
+    val callId: String,
+    val from: String,
+    val fromDevice: String,
+    val self: Boolean,
+    val video: Boolean = true,
+    val callKey: String? = null,
+    val reason: String? = null,
+    val sentAt: Long,
+    val codecs: List<String>? = null,
+    val screen: Int? = null,
+) {
+    companion object {
+        const val INVITE = "call_invite"
+        const val ANSWER = "call_answer"
+        const val DECLINE = "call_decline"
+        const val END = "call_end"
+    }
+}
 
 /** One message in the account's encrypted history (see HistoryCrypto). */
 @Serializable

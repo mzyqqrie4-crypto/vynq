@@ -138,6 +138,7 @@ fun ChatScreen(peer: String, onBack: () -> Unit, onVerify: () -> Unit) {
                     }
                 }
             }
+            CallButtons(peer)
         }
 
         LazyColumn(
@@ -184,6 +185,41 @@ fun ChatScreen(peer: String, onBack: () -> Unit, onVerify: () -> Unit) {
     }
 
     alert?.let { VynqAlert("Couldn't send", it, "OK") { alert = null } }
+}
+
+/** Voice and video call buttons; asks for microphone/camera first, then rings. */
+@Composable
+private fun CallButtons(peer: String) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var pendingVideo by remember { mutableStateOf<Boolean?>(null) }
+    var failure by remember { mutableStateOf<String?>(null) }
+    fun start(video: Boolean) {
+        scope.launch {
+            context.container.calls.startCall(peer, video)
+                .onSuccess { context.startActivity(app.vynq.call.CallManager.callIntent(context)) }
+                .onFailure { failure = it.message ?: it.userMessage() }
+        }
+    }
+    val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
+        val video = pendingVideo ?: return@rememberLauncherForActivityResult
+        pendingVideo = null
+        if (granted[android.Manifest.permission.RECORD_AUDIO] != false &&
+            (!video || granted[android.Manifest.permission.CAMERA] != false)) start(video)
+        else failure = if (video) "vynq needs the camera and microphone for video calls." else "vynq needs the microphone for calls."
+    }
+    fun request(video: Boolean) {
+        val perms = buildList {
+            add(android.Manifest.permission.RECORD_AUDIO)
+            if (video) add(android.Manifest.permission.CAMERA)
+            if (android.os.Build.VERSION.SDK_INT >= 31) add(android.Manifest.permission.BLUETOOTH_CONNECT)
+        }
+        val missing = perms.filter { androidx.core.content.ContextCompat.checkSelfPermission(context, it) != android.content.pm.PackageManager.PERMISSION_GRANTED }
+        if (missing.isEmpty()) start(video) else { pendingVideo = video; ask.launch(missing.toTypedArray()) }
+    }
+    VynqIconButton(VynqIcons.Phone, "Voice call", { request(false) }, size = 44)
+    VynqIconButton(VynqIcons.Video, "Video call", { request(true) }, size = 44)
+    failure?.let { VynqAlert("Couldn't start the call", it, "OK") { failure = null } }
 }
 
 @Composable

@@ -1,5 +1,57 @@
 # vynq development log
 
+## 2026-11-02: Phase 4 — 1:1 calls (branch `phase4/calls`)
+
+**Implemented**
+- Backend migration `20261104000000_calls.sql`: `calls` table (caller, callee, video, state, timestamps), `create_call` / `update_call` RPCs for the two participants, `call_member` for the service role only. Edge Function `livekit-token` (livekit-server-sdk 2.19.1): checks the JWT, that the device belongs to the caller and that the caller is in the call, then issues a 10-minute token for room = call id, identity `user:device`. LiveKit Cloud (free tier, `vynq-rij14n09.livekit.cloud`); URL, key and secret are Supabase secrets the owner set in the dashboard, never in the repo.
+- Signalling over the Signal channel: `call_invite`, `call_answer`, `call_decline`, `call_end` as end-to-end encrypted control messages, also copied to the account's other phones ("answered/declined on another phone"). The invite carries a fresh random 32-byte media key; both phones hand it to LiveKit's frame encryption (AES-GCM), so the LiveKit server forwards frames it can't read. The key never reaches the database or LiveKit.
+- Android (LiveKit Android SDK 2.29.1): `CallManager` (one call at a time, busy reply, 45 s ring timeout, missed/declined/duration notes in the chat), `CallService` foreground service (`phoneCall|camera|microphone`), incoming-call notification with Answer/Decline, call screen over the lock screen, vynq's own looping ringtone and vibration (follows silent/vibrate mode), Calls tab built from call notes.
+- Call screen: labelled controls (Mute, Speaker/Earpiece, Camera, Flip, Details, End), speaker button in voice calls, "turned their camera off" placeholder, security badge, **Details** panel with live WebRTC numbers (resolution, fps, bitrate both ways, round trip, packet loss, codec both ways, route).
+- Honest label: "End-to-end encrypted" only while every encrypted track (ours and theirs) reports an active key and none has failed; otherwise "Encrypted in transit".
+- Settings → Notifications → Calls (owner request after the Xiaomi didn't ring): full-screen call permission status, Xiaomi lock-screen/pop-up shortcut, ringtone test.
+- **Video quality** (owner requests):
+  - Codec per direction: each phone sends the formats it can decode in the invite/answer and sends the best it can **encode in hardware** that the other can play: AV1, then H.265, then H.264 (universal). Software encoders are never chosen. Older builds without the list get H.264. The caller previews its camera and publishes only after the answer.
+  - Settings → Call quality decides the resolution and vynq never lowers it during a call (owner decision after trying adaptive downscaling, which started calls at ~540p): Data saver 360p/0.5 Mbps, Automatic 1080p/3.5 Mbps, High 1080p/5 Mbps, Maximum 1080p/8 Mbps, or 1440p/12 Mbps when the other phone's screen is wider than 1080 px and this phone's front camera and hardware encoder do 1440p30 (vendor performance points or measured rates; no data → no).
+  - One stream per direction (no simulcast, no adaptive stream): it's a 1:1 call.
+
+**Tested (executed)**
+- Backend: 60/60 policy tests (5 for calls). Live: `backend/e2e/calls-smoke.mjs` 5/5 on the real project (token only for the call's two members and their own devices, room-scoped, expires).
+- Android: 75/75 JVM tests, including a call invite between two simulated phones on real libsignal (media key delivered end to end) and the codec/1440p choice rules.
+- Real phones (Xiaomi 17 Pro, Snapdragon 8 Elite Gen 5, HyperOS CN ↔ realme 14x 5G, Dimensity 6300, ColorOS; Wi-Fi):
+  - Voice and video calls both directions; "End-to-end encrypted" confirmed in the logs for audio and video on both phones (`e2ee … OK` for local and remote tracks).
+  - Bug found and fixed: the callee stayed on "Connecting" when the caller was already in the room.
+  - Xiaomi didn't ring: HyperOS refused the full-screen call notification. Fixed with vynq's own ringtone, opening the call screen directly when vynq is in front, and the Calls checklist; rang and showed the call screen after the owner enabled the permissions (owner confirmed).
+  - Speaker in voice calls, camera-off placeholder, labelled icons (owner confirmed).
+  - Codec negotiation: both phones chose **H.265** both ways (neither has a hardware AV1 encoder; checked in each phone's codec list). Video stayed end-to-end encrypted with H.265 through LiveKit Cloud.
+  - 1080p30 both ways; 1440p from the realme to the Xiaomi on Maximum (the realme's 720 px screen gets 1080p). The realme's camera delivers only 16–25 fps at 1440p; the owner prefers to keep it user-controlled (pick High on such phones).
+  - **Camera and microphone released after hang-up:** `dumpsys media.camera` on both phones shows no active camera clients and a DISCONNECT for every vynq CONNECT; `dumpsys audio` shows audio focus abandoned after each call.
+
+**Phase 4 acceptance (docs/04-roadmap.md)**
+| Criterion | Result |
+|---|---|
+| 1:1 video call on Wi-Fi and on mobile data, 30 min without drop | ⬜ not run (calls so far ≤ 3 min, Wi-Fi only) |
+| Incoming call rings from killed app state | ⬜ not run. Rings with vynq in the background and the screen locked (background connection alive); with the process killed it depends on the 15-min job (see gaps) |
+| Wi-Fi→LTE handover reconnects < 5 s | ⬜ not run |
+| Camera/mic released after hang-up (`dumpsys media.camera`) | ✅ both phones |
+| Diagnostics panel shows live LiveKit stats | ✅ Details panel, numbers from WebRTC every second |
+
+The test pair is Xiaomi↔realme, not Xiaomi↔Xiaomi as the criterion says.
+
+**Deviations**
+- No `ConnectionService` / `core-telecom` yet: calls use a foreground service plus a call-style notification. Consequence: no system call log entry, and Bluetooth car kits / the OS "busy on another call" handling don't know about vynq calls.
+- No push provider (owner decision: background connection). A call reaches a phone while vynq's background connection is alive; once the OS kills the process the call is missed and shows as a missed call later.
+
+**Not verified / known gaps**
+- Long calls, mobile data and network handover (the three open acceptance rows).
+- On a lossy network (3 % loss in the tests) WebRTC raises the bitrate slowly; a full drop in bandwidth estimate makes High/Maximum stutter (resolution is kept by owner choice).
+- The LiveKit server sees who is in a call, when, for how long, IP addresses and bitrates (threat model T3, T9).
+- Battery and heat during calls: not measured (Phase 5).
+- The caller's own "joined" log line was missing in one early test; later tests show it on both phones.
+
+**Blockers:** none.
+
+**Next action:** you review and merge the Phase 4 PR; the three open acceptance checks can be run before or after merging.
+
 ## 2026-11-01: Phase 3 — end-to-end encrypted messaging (branch `phase3/messaging`)
 
 **Implemented**

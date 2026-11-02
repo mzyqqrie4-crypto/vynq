@@ -55,6 +55,9 @@ class MessagingService(
     private val _session = MutableStateFlow<MessagingSession?>(null)
     val session: StateFlow<MessagingSession?> = _session.asStateFlow()
 
+    /** Receives call signals from whichever messenger is open (set by CallManager's owner). */
+    var onCallSignal: ((CallSignal) -> Unit)? = null
+
     /** The conversation on screen right now; it doesn't get notifications. */
     val openChat = MutableStateFlow<String?>(null)
 
@@ -106,6 +109,7 @@ class MessagingService(
         }
         val messenger = Messenger(api, dao, userId, FileAttachmentCache(attachmentsDir(context, deviceId)))
         messenger.onHistoryRequest = { notifier.showHistoryRequest(it.deviceName) }
+        messenger.onCallSignal = { onCallSignal?.invoke(it) }
         _session.value = MessagingSession(messenger, dao, userId)
         realtime = RealtimeMailbox(api.realtimeUrl, deviceId, auth::accessToken, scope, onMail = ::syncNow)
         updateRealtime()

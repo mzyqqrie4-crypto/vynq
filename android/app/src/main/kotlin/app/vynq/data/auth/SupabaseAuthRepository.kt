@@ -170,6 +170,11 @@ class SupabaseAuthRepository(
         if (body.isBlank()) JsonNull else json.parseToJsonElement(body)
     }.getOrThrow()
 
+    override suspend fun function(name: String, args: JsonObject): JsonElement = authed { token ->
+        val body = call("POST", "/functions/v1/$name", args, token)
+        if (body.isBlank()) JsonNull else json.parseToJsonElement(body)
+    }.getOrThrow()
+
     override suspend fun upload(path: String, bytes: ByteArray) = authed<Unit> { token ->
         send(Request.Builder().url("$base/storage/v1/object/attachments/$path")
             .post(bytes.toRequestBody(BLOB_TYPE)).withAuth(token).build())

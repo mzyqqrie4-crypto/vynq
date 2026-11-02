@@ -9,6 +9,7 @@ import app.vynq.data.auth.InstallDeviceIdentity
 import app.vynq.data.auth.KeystoreSessionStore
 import app.vynq.data.auth.SupabaseAuthRepository
 import app.vynq.data.auth.UnconfiguredAuthRepository
+import app.vynq.call.CallManager
 import app.vynq.data.messaging.MessagingService
 import app.vynq.data.network.NetworkMonitor
 import app.vynq.data.prefs.PreferencesRepository
@@ -52,6 +53,11 @@ class AppContainer(context: Context) {
     /** End-to-end encrypted messaging for whoever is signed in on this device. */
     val messaging = MessagingService(context, accounts, accounts, accounts, deviceIdentity, preferences, appScope)
         .also { if (backendConfigured) it.attach() }
+
+    /** 1:1 calls over LiveKit (created on first use; signals arrive through messaging). */
+    val calls: CallManager by lazy { CallManager(context, accounts, messaging, preferences, appScope) }
+
+    init { messaging.onCallSignal = { calls.onSignal(it) } }
 }
 
 val Context.container: AppContainer get() = (applicationContext as VynqApplication).container

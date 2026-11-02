@@ -61,6 +61,7 @@ fun NotificationsScreen(onBack: () -> Unit) {
     LifecycleResumeEffect(Unit) { refresh++; onPauseOrDispose { } }
     val notificationsOn = remember(refresh) { container.messaging.notifier.canPost() }
     val batteryOk = remember(refresh) { BackgroundDelivery.ignoresBatteryOptimizations(context) }
+    val fullScreenOk = remember(refresh) { ReliabilityGuide.canUseFullScreenIntent(context) }
 
     val askPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh++ }
     val maker = ReliabilityGuide.maker
@@ -107,6 +108,35 @@ fun NotificationsScreen(onBack: () -> Unit) {
                     onClick = { ReliabilityGuide.openXiaomiOtherPermissions(context) },
                 )
             }
+        }
+
+        SectionLabel("Calls")
+        ListGroup {
+            ListRow(
+                "Full-screen incoming calls", icon = VynqIcons.Phone,
+                subtitle = if (fullScreenOk) "Calls take over the screen, even when locked"
+                else "Off: calls only show as a notification. Turn on so the call screen appears.",
+                onClick = { ReliabilityGuide.openFullScreenIntentSettings(context) },
+                trailing = { StatusPill(if (fullScreenOk) "On" else "Off", positive = fullScreenOk) },
+            )
+            if (maker == ReliabilityGuide.Maker.Xiaomi) {
+                RowDivider()
+                ListRow(
+                    "Show calls on the lock screen", icon = VynqIcons.Lock,
+                    subtitle = "Xiaomi: allow “Show on lock screen” and “Display pop-up windows while running in the background”",
+                    onClick = { ReliabilityGuide.openXiaomiOtherPermissions(context) },
+                )
+            }
+            RowDivider()
+            ListRow(
+                "Test the ringtone", icon = VynqIcons.Bell,
+                subtitle = "Rings for 3 seconds the way a call would (silent mode stays silent)",
+                onClick = {
+                    val ringer = app.vynq.call.Ringer(context)
+                    ringer.start()
+                    scope.launch { kotlinx.coroutines.delay(3_000); ringer.stop() }
+                },
+            )
         }
 
         SectionLabel("Background connection")

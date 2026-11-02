@@ -79,6 +79,15 @@ object ReliabilityGuide {
             .setClassName("com.miui.securitycenter", "com.miui.permcenter.permissions.PermissionsEditorActivity")
             .putExtra("extra_pkgname", context.packageName)) || openAppDetails(context)
 
+    /** Android 14+: apps need the user's OK to show a full-screen call screen. */
+    fun canUseFullScreenIntent(context: Context): Boolean =
+        Build.VERSION.SDK_INT < 34 || context.getSystemService(android.app.NotificationManager::class.java).canUseFullScreenIntent()
+
+    fun openFullScreenIntentSettings(context: Context): Boolean =
+        (Build.VERSION.SDK_INT >= 34 && start(context,
+            Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT, Uri.parse("package:${context.packageName}"))))
+            || openNotificationSettings(context)
+
     fun openNotificationSettings(context: Context): Boolean =
         start(context, Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName))
             || openAppDetails(context)

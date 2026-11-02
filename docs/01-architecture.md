@@ -89,6 +89,8 @@ Design outline (Phase 3):
 
 The UI will show "End-to-end encrypted" for a call **only** when the frame cryptor reports an active key on both sides. Otherwise it shows "Encrypted in transit".
 
+*Built in Phase 4:* the invite carries a fresh 32-byte key over Signal; the badge needs every track (local and remote, audio and video) to report OK and none to have failed. Video format per direction: the best **hardware** encoder the sender has that the receiver can decode, AV1 → H.265 → H.264 (each phone sends its decodable list in the invite/answer). Resolution comes from Settings → Call quality and is never lowered mid-call; 1440p only on Maximum when the receiver's screen is wider than 1080 px and the sender's camera and encoder do 1440p30.
+
 ## 7. Push & background — *revised 2026-11-01*
 
 Message delivery does **not** depend on any push provider (Phase 3, `android/.../notify/`):
@@ -97,9 +99,9 @@ Message delivery does **not** depend on any push provider (Phase 3, `android/...
 - Settings → Notifications is a checklist: notification permission and battery exemption (read live), plus deep links to vendor screens apps can't read (Xiaomi Autostart / battery saver / lock-screen pop-ups; OPPO/realme/OnePlus, vivo, Huawei/Honor auto-launch). We open those screens; we never try to bypass the restrictions.
 - Why: many phones sold in China have no Google services, and phones that do (including the test Xiaomi, a CN ROM) throttle apps that aren't on vendor allow-lists. This is the approach Signal uses without Google services. Cost: a persistent connection (heartbeat every 25 s). Battery impact not yet measured.
 
-**Open decision (for Phase 4 calls):** an incoming call must ring a phone whose app process is dead. Options: FCM data-only (needs a Firebase project; a proprietary SDK next to AGPL code needs a licence review), vendor push (Xiaomi MiPush, HeyTap, etc.: vendor accounts, proprietary SDKs, same licence question), or UnifiedPush. The background connection above already covers calls while it's alive.
+**Calls (decided 2026-11-01, owner: background connection):** call invites arrive over the same background connection, so a call rings while it is alive (verified on both test phones with the screen locked). A phone whose vynq process the OS has killed misses the call and shows it as missed later. Revisit with FCM data-only (Firebase project + licence review next to AGPL code), vendor push (MiPush, HeyTap: proprietary SDKs, same licence question) or UnifiedPush if killed-state ringing becomes a requirement.
 
-- Calls: `androidx.core:core-telecom` (ConnectionService) with a full-screen intent; during a call a foreground service of type `camera|microphone|phoneCall`.
+- Calls: a foreground service of type `phoneCall|camera|microphone` plus a call-style notification with a full-screen intent, and vynq's own ringtone (HyperOS may refuse the full-screen intent). `androidx.core:core-telecom` (ConnectionService) is **not built yet**, so the OS call log, car kits and "busy on another call" don't see vynq calls.
 - iOS: APNs with a Notification Service Extension that decrypts locally, plus PushKit VoIP → CallKit for calls (required: every VoIP push must report a call).
 
 ## 8. Local data

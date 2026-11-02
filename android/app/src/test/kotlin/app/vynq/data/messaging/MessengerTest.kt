@@ -163,6 +163,7 @@ class MessengerTest {
             override val deviceId = this@Phone.deviceId
             override val realtimeUrl = ""
             override val deviceName = "Phone ${deviceId.take(4)}"
+            override suspend fun function(name: String, args: JsonObject): JsonElement = error("no functions in tests")
             override suspend fun rpc(function: String, args: JsonObject) = server.handle(user, deviceId, function, args)
             override suspend fun upload(path: String, bytes: ByteArray) { server.blobs[path] = bytes }
             override suspend fun download(path: String) = server.blobs.getValue(path)
@@ -411,5 +412,46 @@ class MessengerTest {
         newPhone.messenger.unlockWithRecoveryKey(recovery)
         assertEquals(3, newPhone.dao.messages(bob).size)
         assertEquals(3, server.history.count { it.second == alice })
+    }
+
+    // --- call signalling -----------------------------------------------------------------------
+
+    @Test fun `a call invite reaches the contact's phones with the media key, end to end`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        a.messenger.start(); b.messenger.start()
+        connect(a, b, "bob")
+        val got = mutableListOf<CallSignal>()
+        b.messenger.onCallSignal = { got += it }
+        val key = "k".repeat(43)
+        assertEquals(1, a.messenger.sendCallSignal(bob, "call_invite", "c-1", video = true, callKey = key))
+        assertFalse(server.mailbox.any { String(it.body, Charsets.ISO_8859_1).contains(key) })   // key is inside the ciphertext
+        b.messenger.sync()
+        val s = got.single()
+        assertEquals("call_invite", s.type); assertEquals("c-1", s.callId); assertEquals(alice, s.from)
+        assertEquals(key, s.callKey); assertTrue(s.video); assertFalse(s.self)
+        assertTrue(b.dao.messages(alice).isEmpty())   // signals are never shown as messages
+    }
+
+    @Test fun `answering tells my other phones to stop ringing`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this); val b2 = Phone(server, bob, this)
+        a.messenger.start(); b.messenger.start(); b2.messenger.start()
+        connect(a, b, "bob"); b2.messenger.refreshContacts()
+        val onB2 = mutableListOf<CallSignal>(); val onA = mutableListOf<CallSignal>()
+        b2.messenger.onCallSignal = { onB2 += it }; a.messenger.onCallSignal = { onA += it }
+        b.messenger.sendCallSignal(alice, "call_answer", "c-2", alsoMine = true)
+        b2.messenger.sync(); a.messenger.sync()
+        assertTrue(onB2.single().self)
+        assertEquals("call_answer", onA.single().type)
+    }
+
+    @Test fun `strangers can't ring you`() = runTest {
+        val a = Phone(server, alice, this); val b = Phone(server, bob, this)
+        a.messenger.start(); b.messenger.start()
+        a.messenger.requestContact("bob")   // not accepted
+        val got = mutableListOf<CallSignal>()
+        b.messenger.onCallSignal = { got += it }
+        assertEquals(0, runCatching { a.messenger.sendCallSignal(bob, "call_invite", "c-3", callKey = "x") }.getOrDefault(0))
+        b.messenger.sync()
+        assertTrue(got.isEmpty())
     }
 }

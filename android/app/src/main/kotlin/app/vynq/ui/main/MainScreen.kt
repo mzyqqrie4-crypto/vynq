@@ -67,7 +67,7 @@ fun MainScreen(onOpen: (String) -> Unit) {
         ) { current ->
             when (current) {
                 Tab.Chats -> ChatsTab(onFindPeople = { tab = Tab.Contacts }, onOpenChat = { onOpen(Routes.chat(it)) }, onOpen = onOpen)
-                Tab.Calls -> CallsTab(onFindPeople = { tab = Tab.Contacts })
+                Tab.Calls -> CallsTab(onFindPeople = { tab = Tab.Contacts }, onOpenChat = { onOpen(Routes.chat(it)) })
                 Tab.Contacts -> ContactsTab(onOpenChat = { onOpen(Routes.chat(it)) })
                 Tab.Settings -> SettingsTab(onOpen = onOpen)
             }
