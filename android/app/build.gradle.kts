@@ -16,6 +16,15 @@ val localProps = Properties().apply {
 fun backendSetting(key: String, env: String): String =
     (localProps.getProperty(key) ?: System.getenv(env) ?: "").trim()
 
+// Release signing: from CI secrets (env) or a git-ignored keystore.properties next to
+// local.properties. Without them the release APK is built unsigned (it won't install).
+val keystoreProps = Properties().apply {
+    rootProject.file("keystore.properties").takeIf { it.exists() }?.inputStream()?.use(::load)
+}
+fun signingSetting(key: String, env: String): String? =
+    (System.getenv(env) ?: keystoreProps.getProperty(key))?.trim()?.takeIf { it.isNotEmpty() }
+val releaseKeystore = signingSetting("storeFile", "VYNQ_KEYSTORE_FILE")
+
 android {
     namespace = "app.vynq"
     compileSdk = 36
@@ -25,13 +34,22 @@ android {
         applicationId = "app.vynq"
         minSdk = 28
         targetSdk = 36
-        versionCode = 3
-        versionName = "0.3.0-phase3"
+        versionCode = 6
+        versionName = "0.6.0"
         // libsignal ships large native code per ABI; every phone we target is arm64.
         // (Add "x86_64" here temporarily to run on an emulator.)
         ndk { abiFilters += listOf("arm64-v8a") }
         buildConfigField("String", "SUPABASE_URL", "\"${backendSetting("vynq.supabaseUrl", "VYNQ_SUPABASE_URL")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${backendSetting("vynq.supabaseAnonKey", "VYNQ_SUPABASE_ANON_KEY")}\"")
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) create("release") {
+            storeFile = rootProject.file(releaseKeystore)
+            storePassword = signingSetting("storePassword", "VYNQ_KEYSTORE_PASSWORD")
+            keyAlias = signingSetting("keyAlias", "VYNQ_KEY_ALIAS")
+            keyPassword = signingSetting("keyPassword", "VYNQ_KEY_PASSWORD")
+        }
     }
 
     buildTypes {
@@ -43,7 +61,8 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Release signing is injected by CI from encrypted secrets (Phase 8). No keystore in git.
+            // Signing key from CI secrets or keystore.properties; never in git.
+            signingConfigs.findByName("release")?.let { signingConfig = it }
         }
     }
 
