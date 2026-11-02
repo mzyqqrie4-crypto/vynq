@@ -89,7 +89,7 @@ Design outline (Phase 3):
 
 The UI will show "End-to-end encrypted" for a call **only** when the frame cryptor reports an active key on both sides. Otherwise it shows "Encrypted in transit".
 
-*Built in Phase 4:* the invite carries a fresh 32-byte key over Signal; the badge needs every track (local and remote, audio and video) to report OK and none to have failed. Video format per direction: the best **hardware** encoder the sender has that the receiver can decode, AV1 → H.265 → H.264 (each phone sends its decodable list in the invite/answer). Resolution comes from Settings → Call quality and is never lowered mid-call; 1440p only on Maximum when the receiver's screen is wider than 1080 px and the sender's camera and encoder do 1440p30.
+*Built in Phase 4:* the invite carries a fresh 32-byte key over Signal; the badge needs every track (local and remote, audio and video) to report OK and none to have failed. Video format per direction: the best **hardware** encoder the sender has that the receiver can decode, AV1 → H.265 → H.264 (each phone sends its decodable list in the invite/answer). Resolution comes from Settings → Call quality and is never lowered mid-call, with one exception: when Android reports **severe** heat the camera steps down one level and the call screen says so (Phase 5). 1440p only on Maximum when the receiver's screen is wider than 1080 px and the sender's camera and encoder do 1440p30.
 
 ## 7. Push & background — *revised 2026-11-01*
 
