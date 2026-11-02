@@ -34,11 +34,13 @@ android {
         applicationId = "app.vynq"
         minSdk = 28
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.6.0"
+        versionCode = 7
+        versionName = "0.6.1"
         // libsignal ships large native code per ABI; every phone we target is arm64.
         // (Add "x86_64" here temporarily to run on an emulator.)
         ndk { abiFilters += listOf("arm64-v8a") }
+        // Home-screen name; test builds say what they are so they can't be mistaken for the real app.
+        manifestPlaceholders["appLabel"] = "vynq"
         buildConfigField("String", "SUPABASE_URL", "\"${backendSetting("vynq.supabaseUrl", "VYNQ_SUPABASE_URL")}\"")
         buildConfigField("String", "SUPABASE_ANON_KEY", "\"${backendSetting("vynq.supabaseAnonKey", "VYNQ_SUPABASE_ANON_KEY")}\"")
     }
@@ -56,6 +58,7 @@ android {
         debug {
             applicationIdSuffix = ".debug"
             versionNameSuffix = "-debug"
+            manifestPlaceholders["appLabel"] = "vynq debug"
         }
         release {
             isMinifyEnabled = true
@@ -63,6 +66,16 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // Signing key from CI secrets or keystore.properties; never in git.
             signingConfigs.findByName("release")?.let { signingConfig = it }
+        }
+        // Same shrunk code as release, installed beside it ("vynq staging") and signed with the
+        // public debug key: for reproducing release-only bugs without the real signing key.
+        create("staging") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".staging"
+            versionNameSuffix = "-staging"
+            manifestPlaceholders["appLabel"] = "vynq staging"
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
         }
     }
 

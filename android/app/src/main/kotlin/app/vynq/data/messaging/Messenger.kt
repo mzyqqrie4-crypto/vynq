@@ -1,5 +1,6 @@
 package app.vynq.data.messaging
 
+import android.util.Log
 import app.vynq.data.auth.AccountError
 import app.vynq.data.auth.BackendApi
 import app.vynq.data.crypto.AttachmentCrypto
@@ -270,7 +271,10 @@ class Messenger(
             .recoverCatching { e ->
                 // A device list that changed under us: reconcile and try once more.
                 if (e is AccountError.Server && e.status == 403) locked { encryptAndSend(message) } else throw e
-            }.isSuccess
+            }
+            // Why a send failed, for diagnosis (error type and message only, never the text).
+            .onFailure { e -> runCatching { Log.w(TAG, "send failed: ${e.javaClass.name}: ${e.message}") } } // no Log in JVM tests
+            .isSuccess
         withContext(io) { dao.updateStatus(message.id, if (ok) MessageStatus.Sent else MessageStatus.Failed) }
     }
 
@@ -656,6 +660,7 @@ class Messenger(
     private fun JsonObject.str(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
 
     companion object {
+        private const val TAG = "vynq.msg"
         private const val PUBLISHED = "published"
         private const val NS_HISTORY = "history"
         private const val NS_HISTORY_REQ = "history_req"
