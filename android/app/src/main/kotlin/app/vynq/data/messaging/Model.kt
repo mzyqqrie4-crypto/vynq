@@ -77,6 +77,8 @@ data class WirePayload(
     val reason: String? = null,
     /** Video formats the sending phone can decode (invite and answer); see VideoCodecs. */
     val codecs: List<String>? = null,
+    /** Short side of the sending phone's screen in pixels (invite and answer); see VideoSize. */
+    val screen: Int? = null,
 )
 
 /** A call signal from a contact (or from one of our own phones, e.g. "answered elsewhere"). */
@@ -91,6 +93,7 @@ data class CallSignal(
     val reason: String? = null,
     val sentAt: Long,
     val codecs: List<String>? = null,
+    val screen: Int? = null,
 ) {
     companion object {
         const val INVITE = "call_invite"

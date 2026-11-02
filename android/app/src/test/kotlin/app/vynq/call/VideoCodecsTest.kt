@@ -29,3 +29,14 @@ class VideoCodecsTest {
         assertEquals(listOf(AV1, H265, H264), VideoCodecs.receivable(hardwareH265Decoder = true))
     }
 }
+
+class VideoSizeTest {
+    @Test fun qhdOnlyOnMaximumToALargeScreenWhenThisPhoneCan() {
+        assertEquals(true, VideoSize.send1440(maximum = true, peerScreen = 1220) { true })
+        assertEquals(false, VideoSize.send1440(maximum = false, peerScreen = 1440) { true })
+        assertEquals(false, VideoSize.send1440(maximum = true, peerScreen = 720) { true })   // 720p screen
+        assertEquals(false, VideoSize.send1440(maximum = true, peerScreen = 1080) { true })  // 1080p screen
+        assertEquals(false, VideoSize.send1440(maximum = true, peerScreen = null) { true })  // older vynq
+        assertEquals(false, VideoSize.send1440(maximum = true, peerScreen = 1440) { false }) // camera/encoder can't
+    }
+}

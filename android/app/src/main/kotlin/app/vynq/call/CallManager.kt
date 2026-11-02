@@ -95,6 +95,8 @@ class CallManager(
     private var callKey: String? = null
     /** What the other phone can decode (from its invite or answer); null until known. */
     private var peerCodecs: List<String>? = null
+    /** Short side of the other phone's screen (from its invite or answer). */
+    private var peerScreen: Int? = null
     private var answered = false
     /** Caller's camera before the answer: shown to the caller, not sent yet. */
     private var preview: LocalVideoTrack? = null
@@ -125,7 +127,7 @@ class CallManager(
         callKey = key
         _state.value = CallState(callId, peer, session.messenger.contactLabel(peer), outgoing = true, video = video, phase = CallPhase.Ringing)
         val reached = session.messenger.sendCallSignal(peer, CallSignal.INVITE, callId, video = video, callKey = key,
-            codecs = VideoCodecs.receivable())
+            codecs = VideoCodecs.receivable(), screen = VideoSize.screenShortSide(context))
         if (reached == 0) {
             end("They haven't set up vynq on a phone yet.", notifyPeer = false)
             error("They haven't set up vynq on a phone yet.")
@@ -152,6 +154,7 @@ class CallManager(
                 }
                 callKey = s.callKey
                 peerCodecs = s.codecs
+                peerScreen = s.screen
                 val label = messaging.session.value?.messenger?.contactLabel(s.from) ?: "Someone"
                 _state.value = CallState(s.callId, s.from, label, outgoing = false, video = s.video, phase = CallPhase.Ringing)
                 notifier.showIncoming(s.callId, label, s.video)
@@ -170,6 +173,7 @@ class CallManager(
                 else {                                                // they answered; media joins in the room
                     timeout?.cancel()
                     peerCodecs = s.codecs
+                    peerScreen = s.screen
                     answered = true
                     if (current.video) cameraLock.withLock { publishPreview() }
                 }
@@ -200,7 +204,8 @@ class CallManager(
         _state.update { it?.copy(phase = CallPhase.Connecting) }
         scope.launch {
             val m = messaging.session.value?.messenger
-            runCatching { m?.sendCallSignal(s.peer, CallSignal.ANSWER, s.callId, alsoMine = true, codecs = VideoCodecs.receivable()) }
+            runCatching { m?.sendCallSignal(s.peer, CallSignal.ANSWER, s.callId, alsoMine = true,
+                codecs = VideoCodecs.receivable(), screen = VideoSize.screenShortSide(context)) }
             runCatching { api.rpc("update_call", buildJsonObject { put("p_call", s.callId); put("p_state", "answered") }) }
             CallService.start(context, s.video)
             connect(s.callId, callKey ?: return@launch end("Missing call key", notifyPeer = true), s.video)
@@ -400,9 +405,16 @@ class CallManager(
 
     private suspend fun publishCamera(r: Room): Boolean {
         val codec = VideoCodecs.choose(peerCodecs)
+        val maximum = prefs.callQuality.first() == CallQuality.Maximum
+        val qhd = VideoSize.send1440(maximum, peerScreen) { VideoSize.deviceCan1440(context, codec) }
+        if (qhd) {
+            r.videoTrackCaptureDefaults = r.videoTrackCaptureDefaults.copy(captureParams = CallProfile.Qhd.capture)
+            r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(
+                videoEncoding = CallProfile.Qhd.encoding, degradationPreference = CallProfile.Qhd.degradation)
+        }
         r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(videoCodec = codec)
         val ok = runCatching { r.localParticipant.setCameraEnabled(true) }.getOrDefault(false)
-        Log.i(TAG, "camera sent as $codec (they decode ${peerCodecs ?: "unknown"}): $ok")
+        Log.i(TAG, "camera sent as $codec ${if (qhd) "1440p" else "up to 1080p"} (they decode ${peerCodecs ?: "unknown"}, screen ${peerScreen ?: "unknown"}): $ok")
         _state.update { it?.copy(localVideo = localVideoTrack()) }
         return ok
     }
@@ -428,6 +440,7 @@ class CallManager(
         room = null
         callKey = null
         peerCodecs = null
+        peerScreen = null
         answered = false
         preview?.let { p -> runCatching { p.stop(); p.dispose() } }
         preview = null
@@ -494,5 +507,8 @@ data class CallProfile(
             CallQuality.High -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(5_000_000, 30), KeepSharp)
             CallQuality.Maximum -> CallProfile(VideoCaptureParameter(1920, 1080, 30), VideoEncoding(8_000_000, 30), KeepSharp)
         }
+
+        /** Maximum, when both phones allow it (VideoSize.send1440). */
+        val Qhd = CallProfile(VideoCaptureParameter(2560, 1440, 30), VideoEncoding(12_000_000, 30), KeepSharp)
     }
 }
