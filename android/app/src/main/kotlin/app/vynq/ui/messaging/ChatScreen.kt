@@ -72,7 +72,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 @Composable
-fun ChatScreen(peer: String, onBack: () -> Unit, onVerify: () -> Unit) {
+fun ChatScreen(peer: String, onBack: () -> Unit, onInfo: () -> Unit) {
     val session = messagingSession()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -120,11 +120,11 @@ fun ChatScreen(peer: String, onBack: () -> Unit, onVerify: () -> Unit) {
         ) {
             VynqIconButton(VynqIcons.Back, "Back", onBack, size = 44)
             Row(
-                Modifier.weight(1f).pressable(onClick = onVerify).padding(VynqSpacing.xs),
+                Modifier.weight(1f).pressable(onClick = onInfo).padding(VynqSpacing.xs),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(VynqSpacing.sm),
             ) {
-                Avatar(contact?.label ?: "?", 36)
+                Avatar(contact?.label ?: "?", 36, peer)
                 Column {
                     Text(contact?.label ?: "", style = VynqTheme.type.headline, color = c.textPrimary, maxLines = 1)
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -132,7 +132,7 @@ fun ChatScreen(peer: String, onBack: () -> Unit, onVerify: () -> Unit) {
                             tint = if (verified) c.success else c.textTertiary)
                         Spacer(Modifier.size(4.dp))
                         Text(
-                            if (verified) "Verified · end-to-end encrypted" else "End-to-end encrypted · tap to verify",
+                            if (verified) "Verified · end-to-end encrypted" else "End-to-end encrypted · tap for details",
                             style = VynqTheme.type.caption, color = if (verified) c.success else c.textTertiary,
                         )
                     }
@@ -162,7 +162,13 @@ fun ChatScreen(peer: String, onBack: () -> Unit, onVerify: () -> Unit) {
             }
         }
 
-        Row(
+        if (contact?.state == app.vynq.data.messaging.ContactState.Removed) {
+            Text(
+                "You're no longer contacts. Add ${contact?.username?.let { "@$it" } ?: "them"} again from Contacts to message each other.",
+                style = VynqTheme.type.footnote, color = c.textSecondary, textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(VynqSpacing.lg),
+            )
+        } else Row(
             Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = VynqSpacing.sm, vertical = VynqSpacing.sm),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(VynqSpacing.xs),

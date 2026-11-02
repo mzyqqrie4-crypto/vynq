@@ -1,5 +1,15 @@
 package app.vynq.ui.messaging
 
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.draw.clip
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.Image
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
@@ -38,15 +48,34 @@ fun <T> rememberLocal(session: MessagingSession?, initial: T, vararg keys: Any?,
     }
 }
 
+/**
+ * A person's profile picture (decrypted on this phone), or their initial when
+ * they have none or it can't be opened. Pass [userId] to show the picture.
+ */
 @Composable
-fun Avatar(label: String, size: Int = 44) {
+fun Avatar(label: String, size: Int = 44, userId: String? = null) {
     val c = VynqTheme.colors
-    Box(Modifier.size(size.dp).background(c.accentSoft, CircleShape), contentAlignment = Alignment.Center) {
-        Text(
-            label.trimStart('@').take(1).uppercase().ifEmpty { "?" },
-            style = if (size >= 40) VynqTheme.type.headline else VynqTheme.type.subhead,
-            color = c.accent,
-        )
+    val session = messagingSession()
+    val tick = session?.dao?.changes?.collectAsStateWithLifecycle()?.value
+    var last by remember { mutableStateOf<ByteArray?>(null) }
+    val image by produceState<ImageBitmap?>(null, session, userId, tick) {
+        val bytes = if (session != null && userId != null) runCatching { session.messenger.avatar(userId) }.getOrNull() else null
+        if (bytes == null) { last = null; value = null; return@produceState }
+        if (last?.contentEquals(bytes) == true && value != null) return@produceState
+        last = bytes
+        value = withContext(Dispatchers.Default) { BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap() }
+    }
+    Box(Modifier.size(size.dp).clip(CircleShape).background(c.accentSoft), contentAlignment = Alignment.Center) {
+        val picture = image
+        if (picture != null) {
+            Image(picture, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+        } else {
+            Text(
+                label.trimStart('@').take(1).uppercase().ifEmpty { "?" },
+                style = if (size >= 40) VynqTheme.type.headline else VynqTheme.type.subhead,
+                color = c.accent,
+            )
+        }
     }
 }
 
