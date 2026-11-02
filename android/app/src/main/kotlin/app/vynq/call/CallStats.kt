@@ -82,21 +82,6 @@ class StatsSampler(private val room: Room) {
         )
     }
 
-    /** How our video is doing: frames the camera delivers, frames we send, and why WebRTC holds back. */
-    data class Sending(val captured: Double?, val sent: Double?, val limit: String?)
-
-    suspend fun sending(): Sending {
-        val stats = report { room.getPublisherRTCStats(it) }?.statsMap?.values.orEmpty()
-        val out = stats.filter { it.type == "outbound-rtp" && it.members["kind"] == "video" }
-            .maxByOrNull { (it.members["frameWidth"] as? Number)?.toLong() ?: 0 }
-        val source = stats.firstOrNull { it.type == "media-source" && it.members["kind"] == "video" }
-        return Sending(
-            captured = (source?.members?.get("framesPerSecond") as? Number)?.toDouble(),
-            sent = (out?.members?.get("framesPerSecond") as? Number)?.toDouble(),
-            limit = out?.members?.get("qualityLimitationReason") as? String,
-        )
-    }
-
     private fun livekit.org.webrtc.RTCStats.resolution(): String? {
         val w = (members["frameWidth"] as? Number)?.toInt() ?: return null
         val h = (members["frameHeight"] as? Number)?.toInt() ?: return null

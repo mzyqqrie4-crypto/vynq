@@ -42,14 +42,14 @@ fun themeModeFromKey(key: String?): ThemeMode =
     ThemeMode.entries.firstOrNull { it.name == key } ?: ThemeMode.System
 
 /**
- * User-facing call quality profiles. Phase 4/5 maps them onto LiveKit capture and
- * publish settings; until then the choice is stored, not yet applied.
+ * User-facing call quality profiles; CallProfile maps them onto what a call
+ * sends. vynq never changes the resolution mid-call: this choice decides it.
  */
 enum class CallQuality(val title: String, val description: String) {
-    Automatic("Automatic", "Adapts to your connection, battery and device temperature. Recommended."),
-    DataSaver("Data saver", "Lower resolution and bitrate. Uses noticeably less mobile data."),
-    High("High quality", "Prefers sharp, smooth video when the network allows it."),
-    Maximum("Maximum", "Highest resolution your device can send reliably. Uses more battery and data.");
+    Automatic("Automatic", "Full HD (1080p) in the best video format both phones support. Recommended."),
+    DataSaver("Data saver", "360p. Uses much less mobile data and stays smooth on weak connections."),
+    High("High quality", "Full HD (1080p) with more detail. Needs a good connection."),
+    Maximum("Maximum", "Up to 1440p when the other phone's screen can show it. Needs a fast connection; uses more battery and data.");
 
     companion object {
         fun fromKey(key: String?): CallQuality = entries.firstOrNull { it.name == key } ?: Automatic

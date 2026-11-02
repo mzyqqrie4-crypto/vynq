@@ -14,9 +14,7 @@ import io.livekit.android.room.track.VideoCodec
 import io.livekit.android.room.track.VideoEncoding
 import livekit.org.webrtc.RtpParameters
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
-import livekit.org.webrtc.CameraVideoCapturer
 import kotlinx.coroutines.sync.withLock
 import app.vynq.data.auth.BackendApi
 import app.vynq.data.messaging.CallSignal
@@ -104,7 +102,6 @@ class CallManager(
     private var preview: LocalVideoTrack? = null
     private val cameraLock = Mutex()
     private var roomJob: Job? = null
-    private var qhdWatch: Job? = null
     private var timeout: Job? = null
     private val trackE2ee = mutableMapOf<String, E2EEState>()
 
@@ -417,43 +414,9 @@ class CallManager(
         }
         r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(videoCodec = codec)
         val ok = runCatching { r.localParticipant.setCameraEnabled(true) }.getOrDefault(false)
-        if (qhd && ok) watchQhd(r)
         Log.i(TAG, "camera sent as $codec ${if (qhd) "1440p" else "up to 1080p"} (they decode ${peerCodecs ?: "unknown"}, screen ${peerScreen ?: "unknown"}): $ok")
         _state.update { it?.copy(localVideo = localVideoTrack()) }
         return ok
-    }
-
-    /**
-     * 1440p that this phone can't actually keep at a smooth frame rate looks worse than
-     * 1080p. Step the camera down to 1080p for the rest of the call when the camera itself
-     * delivers under 22 fps for about 10 s (the network can't cause that), or WebRTC says
-     * the processor holds the frame rate under 22 for about 8 s. Ignored while the camera
-     * is off (a muted camera sends almost nothing by design).
-     */
-    private fun watchQhd(r: Room) {
-        qhdWatch?.cancel()
-        qhdWatch = scope.launch {
-            val sampler = StatsSampler(r)
-            delay(10_000)                       // let the encoder and bandwidth estimate settle
-            var slow = 0
-            while (isActive && room === r) {
-                val now = sampler.sending()
-                val cameraOn = _state.value?.cameraOn == true
-                slow = when {
-                    !cameraOn -> 0
-                    now.captured != null && now.captured < 22 -> slow + 2
-                    now.limit == "cpu" && now.sent != null && now.sent < 22 -> slow + 3
-                    else -> 0
-                }
-                if (slow >= 10) {
-                    val track = localVideoTrack()
-                    (track?.capturer as? CameraVideoCapturer)?.changeCaptureFormat(1920, 1080, 30)
-                    Log.i(TAG, "1440p too slow here (camera ${now.captured?.toInt()} fps, sent ${now.sent?.toInt()} fps, limit ${now.limit}): stepped down to 1080p")
-                    break
-                }
-                delay(2_000)
-            }
-        }
     }
 
     private fun localVideoTrack(): LocalVideoTrack? =
@@ -473,7 +436,6 @@ class CallManager(
     private fun clear(reason: String? = null) {
         timeout?.cancel(); timeout = null
         roomJob?.cancel(); roomJob = null
-        qhdWatch?.cancel(); qhdWatch = null
         room?.let { r -> runCatching { r.disconnect() }; runCatching { r.release() } }
         room = null
         callKey = null
@@ -525,15 +487,15 @@ class CallManager(
 }
 
 /**
- * What a call sends for each Settings → Call quality choice. The encoder still
- * lowers resolution and bitrate on its own when the network can't keep up
- * (BALANCED: fewer pixels and a few fewer frames, never a 1-4 fps slideshow at
- * full size), and goes back up when the bandwidth returns.
+ * What a call sends for each Settings → Call quality choice. The resolution is
+ * the user's: vynq never lowers it during a call. On a weak connection WebRTC
+ * keeps every pixel and sends fewer frames instead (MAINTAIN_RESOLUTION);
+ * people who'd rather have smooth video there pick a lower quality.
  * (Phase 5 measures these against real networks and tunes them.)
  */
 data class CallProfile(val capture: VideoCaptureParameter, val encoding: VideoEncoding) {
     companion object {
-        val Degradation = RtpParameters.DegradationPreference.BALANCED
+        val Degradation = RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION
 
         fun of(q: CallQuality): CallProfile = when (q) {
             CallQuality.DataSaver -> CallProfile(VideoCaptureParameter(640, 360, 24), VideoEncoding(500_000, 24))
