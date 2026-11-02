@@ -1,5 +1,26 @@
 # vynq development log
 
+## 2026-11-02: Sharing vynq from GitHub Releases (branch `release/github-download`)
+
+Owner request: let others download the Android app from the GitHub repository (owner decision: make the repository public).
+
+**Implemented**
+- Release signing from encrypted GitHub secrets (or a git-ignored `keystore.properties` locally); no key in the repository. Version 0.6.0 (code 6).
+- `.github/workflows/release.yml`: pushing a tag `v<versionName>` runs the unit tests, builds and signs the release APK, verifies the signature and publishes `vynq-<version>.apk` + SHA-256 on GitHub Releases, with `docs/INSTALL.md` as the release text.
+- In-app update notice: release builds ask the GitHub API at most once a day for the latest release and show a banner in Chats when it's newer (GitHub sees the IP address only; stated in About). About links to the releases and the AGPL source.
+
+**Tested (executed)**
+- 79/79 JVM tests (2 new: version comparison).
+- History scan before going public: all 50 commits, no keys, tokens, passwords or secret files (only a test sentence and the public Supabase/LiveKit host names). Every commit carries the owner's Gmail address as author, which becomes public with the repository (owner informed).
+- Release build (R8-shrunk, 30 MB) signed with the public debug test key, installed on the realme next to the debug app: launches, no crash.
+
+**Not verified**
+- **Sign-in, messaging and calls in the release build were not confirmed on a phone.** The owner reported it worked, but the realme's camera history shows no video call after 18:57, and the log recording had ended; the owner chose to publish without the re-test. R8 can break code reached only by reflection or JNI (libsignal, SQLCipher, LiveKit/WebRTC): watch the first testers' reports.
+- The workflow hasn't run yet (needs the signing and backend secrets).
+- No security review (Phase 8).
+
+**Next action:** you create the release key and add the GitHub secrets, make the repository public, then the `v0.6.0` tag publishes the first release.
+
 ## 2026-11-02: Phase 6 — Fusion Mode experiment (branch `phase6/fusion-experiment`)
 
 **Implemented**
