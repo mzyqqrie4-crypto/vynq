@@ -45,6 +45,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.vynq.BuildConfig
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import app.vynq.container
 import app.vynq.designsystem.component.pressable
 import app.vynq.designsystem.icon.VynqIcons
@@ -209,7 +211,13 @@ private fun SecurityBadge(s: CallState) {
         var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
         LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
         val secs = ((now - (s.connectedAt ?: now)) / 1000).coerceAtLeast(0)
-        Text("%d:%02d".format(secs / 60, secs % 60), style = VynqTheme.type.callout, color = Color.White)
+        val calls = androidx.compose.ui.platform.LocalContext.current.container.calls
+        Text(
+            "%d:%02d".format(secs / 60, secs % 60), style = VynqTheme.type.callout, color = Color.White,
+            modifier = Modifier.pointerInput(Unit) {
+                detectTapGestures(onLongPress = { calls.debugStepDown() })   // no-op outside debug builds
+            },
+        )
         Spacer(Modifier.height(4.dp))
     }
     if (s.phase == CallPhase.Connected || s.phase == CallPhase.Reconnecting) {

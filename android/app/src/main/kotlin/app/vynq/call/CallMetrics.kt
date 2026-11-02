@@ -26,6 +26,10 @@ import livekit.org.webrtc.RTCStats
  */
 class CallMetrics(private val context: Context, private val room: Room, private val scope: CoroutineScope) {
     private var job: Job? = null
+    // Per-stream byte counters from the last sample. A camera restart (heat step-down, the other
+    // phone switching cameras) adds a new stream while the stopped one stays in the stats, so
+    // rates are summed per stream and the live stream is the one whose bytes grew most.
+    private var lastBytes: Map<String, Long> = emptyMap()
 
     fun start(video: Boolean, quality: String, codecSent: String) {
         if (job != null) return
@@ -52,6 +56,7 @@ class CallMetrics(private val context: Context, private val room: Room, private 
     private class Totals(
         val at: Long,
         val inVideo: RTCStats?, val outVideo: RTCStats?, val pair: RTCStats?,
+        /** Bytes since the previous sample, summed over streams. */
         val recvBytes: Long, val sendBytes: Long,
         val lost: Long, val received: Long,
         val recvCodec: String?, val sendCodec: String?,
@@ -61,17 +66,22 @@ class CallMetrics(private val context: Context, private val room: Room, private 
         val sub = rtcReport { room.getSubscriberRTCStats(it) }?.statsMap
         val pub = rtcReport { room.getPublisherRTCStats(it) }?.statsMap
         if (sub == null && pub == null) return null
-        val inbound = sub?.values?.filter { it.type == "inbound-rtp" && it.members["kind"] == "video" }.orEmpty()
-        val inVideo = inbound.maxByOrNull { it.long("bytesReceived") }
-        val outVideo = pub?.values?.filter { it.type == "outbound-rtp" && it.members["kind"] == "video" }
-            ?.maxByOrNull { it.long("frameWidth") }
+        val inboundAll = sub?.values?.filter { it.type == "inbound-rtp" }.orEmpty()
+        val outboundAll = pub?.values?.filter { it.type == "outbound-rtp" }.orEmpty()
+        val bytes = inboundAll.associate { it.id to it.long("bytesReceived") } + outboundAll.associate { it.id to it.long("bytesSent") }
+        fun grew(s: RTCStats) = (bytes[s.id] ?: 0) - (lastBytes[s.id] ?: 0)
+        val inbound = inboundAll.filter { it.members["kind"] == "video" }
+        val inVideo = inbound.maxByOrNull { grew(it) }
+        val outVideo = outboundAll.filter { it.members["kind"] == "video" }.maxByOrNull { grew(it) }
+        val recvGrew = inboundAll.sumOf { grew(it).coerceAtLeast(0) }
+        val sendGrew = outboundAll.sumOf { grew(it).coerceAtLeast(0) }
+        lastBytes = bytes
         val pair = (pub ?: sub)?.values?.firstOrNull {
             it.type == "candidate-pair" && it.members["state"] == "succeeded" && it.members["nominated"] == true
         }
         return Totals(
             at = now, inVideo = inVideo, outVideo = outVideo, pair = pair,
-            recvBytes = sub?.values?.filter { it.type == "inbound-rtp" }?.sumOf { it.long("bytesReceived") } ?: 0,
-            sendBytes = pub?.values?.filter { it.type == "outbound-rtp" }?.sumOf { it.long("bytesSent") } ?: 0,
+            recvBytes = recvGrew, sendBytes = sendGrew,
             lost = inbound.sumOf { it.long("packetsLost") },
             received = inbound.sumOf { it.long("packetsReceived") },
             recvCodec = inVideo?.members?.get("codecId")?.let { sub?.get(it)?.members?.get("mimeType") as? String },
@@ -88,12 +98,12 @@ class CallMetrics(private val context: Context, private val room: Room, private 
         val cols = listOf(
             t / 1000.0,
             b.inVideo?.int("frameWidth"), b.inVideo?.int("frameHeight"), b.inVideo?.double("framesPerSecond"),
-            (b.recvBytes - a.recvBytes) * 8 / 1000 / secs,
+            b.recvBytes * 8 / 1000 / secs,
             b.inVideo?.long("freezeCount"), b.inVideo?.double("totalFreezesDuration"), b.inVideo?.long("framesDropped"),
             if (lostNow + gotNow > 0) lostNow * 100.0 / (lostNow + gotNow) else 0.0,
             b.inVideo?.double("jitter")?.times(1000),
             b.outVideo?.int("frameWidth"), b.outVideo?.int("frameHeight"), b.outVideo?.double("framesPerSecond"),
-            (b.sendBytes - a.sendBytes) * 8 / 1000 / secs,
+            b.sendBytes * 8 / 1000 / secs,
             b.outVideo?.members?.get("qualityLimitationReason"),
             b.pair?.double("currentRoundTripTime")?.times(1000),
             b.recvCodec?.removePrefix("video/"), b.sendCodec?.removePrefix("video/"),

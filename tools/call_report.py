@@ -57,8 +57,8 @@ def summarise(path):
         meta_line = f.readline().strip()
         rows = list(csv.DictReader(f))
     meta = dict(p.split("=", 1) for p in meta_line.lstrip("# ").split(" ") if "=" in p)
-    if not rows:
-        return None
+    if not rows or (num(rows[-1]["t_s"]) or 0) < 20:
+        return None   # empty or a call that never really started
     steady = [r for r in rows if (num(r["t_s"]) or 0) >= WARMUP_S] or rows
     duration = num(rows[-1]["t_s"]) or 0
     freezes = max((num(r["freezes"]) or 0) for r in rows)

@@ -435,7 +435,7 @@ class CallManager(
         r.videoTrackCaptureDefaults = r.videoTrackCaptureDefaults.copy(captureParams = profile.capture)
         r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(videoEncoding = profile.encoding, videoCodec = codec)
         val ok = runCatching { r.localParticipant.setCameraEnabled(true) }.getOrDefault(false)
-        Log.i(TAG, "camera sent as $codec ${if (qhd) "1440p" else "up to 1080p"} (they decode ${peerCodecs ?: "unknown"}, screen ${peerScreen ?: "unknown"}): $ok")
+        Log.i(TAG, "camera sent as $codec ${profile.capture.width}x${profile.capture.height} (they decode ${peerCodecs ?: "unknown"}, screen ${peerScreen ?: "unknown"}): $ok")
         _state.update { it?.copy(localVideo = localVideoTrack()) }
         return ok
     }
@@ -472,11 +472,22 @@ class CallManager(
         sendLevel = next
         val cameraOn = _state.value?.cameraOn == true
         localVideoTrack()?.let { r.localParticipant.unpublishTrack(it, true) }
-        if (cameraOn) publishCamera(r)
+        if (cameraOn) {
+            publishCamera(r)
+            // Some cameras (the realme's front camera) keep their last capture size on a new
+            // track; set it explicitly so the step-down really sends fewer pixels.
+            val c = CallProfile.Levels[next].profile.capture
+            localVideoTrack()?.capturer?.changeCaptureFormat(c.width, c.height, c.maxFps)
+        }
         val title = CallProfile.Levels[next].title
         Log.i(TAG, "phone too hot (thermal ${if (Build.VERSION.SDK_INT >= 29) context.getSystemService(PowerManager::class.java).currentThermalStatus else -1}): video lowered to $title")
         _state.update { it?.copy(heatNotice = "Your phone is very hot, so video was lowered to $title.") }
         return true
+    }
+
+    /** Debug builds: run the heat step-down on demand (long-press the call timer) to test it. */
+    fun debugStepDown() {
+        if (BuildConfig.DEBUG) scope.launch { cameraLock.withLock { stepDown() } }
     }
 
     private fun localVideoTrack(): LocalVideoTrack? =
