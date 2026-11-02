@@ -1,0 +1,7 @@
+t_ms,event
+0,start mode=both minutes=5 server=stun.cloudflare.com:3478
+4,wifi available
+5,cell available
+109526,wifi lost
+174393,wifi available
+300047,stop done

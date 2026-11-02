@@ -1,5 +1,31 @@
 # vynq development log
 
+## 2026-11-02: Phase 6 — Fusion Mode experiment (branch `phase6/fusion-experiment`)
+
+**Implemented**
+- `experiments/fusion` (Fusion Probe): a separate Android app, never shipped with vynq. Keeps mobile data up next to Wi-Fi (`requestNetwork`), binds one UDP socket to each network and probes both with STUN Binding requests every 100 ms on a shared clock to Cloudflare's public STUN server (owner decision: no relay server of ours). Logs round trip / lost / down per probe and network events. 3 unit tests (STUN encoding).
+- `tools/fusion_report.py`: per-path loss, RTT p50/p95/p99, late replies, outages, plus estimates of best-path selection and duplication from the simultaneous probes.
+
+**Tested (executed)** on the Xiaomi 17 Pro (the only phone with mobile data), home Wi-Fi + LTE; full tables and the analysis in docs/06-fusion-mode-feasibility.md, raw data in `docs/measurements/phase6/`:
+- 10 min, untouched: Wi-Fi 1.58 % loss, 5 outages (≤0.5 s), p99 109 ms; LTE 0.20 %, 1 outage (1.1 s), p99 56 ms. Duplicated on both (est.): **0 % loss, no outages, p99 49 ms**. Best path per second (est.): 1.05 %.
+- 5 min with Wi-Fi off for 65 s: LTE, already up, went silent for 8.8 s and stayed congested while it carried everything (8.53 % loss, p95 242 ms). Duplication (est.) 7.20 %, best path 8.46 %: neither hides a full Wi-Fi drop.
+
+**Phase 6 acceptance (docs/04-roadmap.md)**
+| Criterion | Result |
+|---|---|
+| Feasibility report with measurements for every scenario in doc 06 | ⚠️ Wi-Fi only / LTE only / both / Wi-Fi drop measured (both paths probed together, so each path alone is in the same runs); induced loss/jitter, changing quality, freeze count in a call, data and battery cost not measured (no relay server; vynq failover call not run; battery stats not resettable over adb) |
+| Ship/no-ship decision recorded | ✅ **No ship now**; possible follow-up: audio-only duplication through a relay (doc 06) |
+
+**Not verified / known gaps**
+- Real duplicated or bonded media was never sent: duplication numbers are estimates from probe timing without a relay's extra hop.
+- The vynq Wi-Fi→mobile failover call (also Phase 4's handover check) wasn't run.
+- iOS (no app-level access to mobile data while on Wi-Fi) and the realme (no mobile data) not tested.
+- Installing a new app over wireless debugging is blocked on the Xiaomi (HyperOS "Install via USB" off); the probe was installed from the phone's Downloads folder.
+
+**Blockers:** none.
+
+**Next action:** you review and merge the Phase 6 PR. Then Phase 7 (iOS) per the roadmap, or the open measurements from Phases 4–6.
+
 ## 2026-11-02: Phase 5 — video quality, partly measured (branch `phase5/video-quality`)
 
 Written up at the owner's request with most measurements still missing; Phase 5 is **not done** by the roadmap's definition.

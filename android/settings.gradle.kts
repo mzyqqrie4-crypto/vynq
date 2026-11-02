@@ -25,3 +25,7 @@ dependencyResolutionManagement {
 rootProject.name = "vynq"
 include(":app")
 include(":core:designsystem")
+
+// Phase 6: standalone multi-path experiment (docs/06). Not part of the vynq app.
+include(":experiments:fusion")
+project(":experiments:fusion").projectDir = file("../experiments/fusion")
