@@ -14,7 +14,9 @@ import io.livekit.android.room.track.VideoCodec
 import io.livekit.android.room.track.VideoEncoding
 import livekit.org.webrtc.RtpParameters
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
+import livekit.org.webrtc.CameraVideoCapturer
 import kotlinx.coroutines.sync.withLock
 import app.vynq.data.auth.BackendApi
 import app.vynq.data.messaging.CallSignal
@@ -102,6 +104,7 @@ class CallManager(
     private var preview: LocalVideoTrack? = null
     private val cameraLock = Mutex()
     private var roomJob: Job? = null
+    private var qhdWatch: Job? = null
     private var timeout: Job? = null
     private val trackE2ee = mutableMapOf<String, E2EEState>()
 
@@ -414,9 +417,35 @@ class CallManager(
         }
         r.videoTrackPublishDefaults = r.videoTrackPublishDefaults.copy(videoCodec = codec)
         val ok = runCatching { r.localParticipant.setCameraEnabled(true) }.getOrDefault(false)
+        if (qhd && ok) watchQhd(r)
         Log.i(TAG, "camera sent as $codec ${if (qhd) "1440p" else "up to 1080p"} (they decode ${peerCodecs ?: "unknown"}, screen ${peerScreen ?: "unknown"}): $ok")
         _state.update { it?.copy(localVideo = localVideoTrack()) }
         return ok
+    }
+
+    /**
+     * 1440p that this phone can't actually keep at a smooth frame rate looks worse than
+     * 1080p: if it sends under 22 fps for 6 s for a reason other than the network, step
+     * the camera down to 1080p for the rest of the call.
+     */
+    private fun watchQhd(r: Room) {
+        qhdWatch?.cancel()
+        qhdWatch = scope.launch {
+            val sampler = StatsSampler(r)
+            delay(10_000)                       // let the encoder and bandwidth estimate settle
+            var slow = 0
+            while (isActive && room === r) {
+                val (fps, limit) = sampler.sending()
+                slow = if (fps != null && fps < 22 && limit != "bandwidth") slow + 1 else 0
+                if (slow >= 3) {
+                    val track = localVideoTrack()
+                    (track?.capturer as? CameraVideoCapturer)?.changeCaptureFormat(1920, 1080, 30)
+                    Log.i(TAG, "1440p too slow here (${fps?.toInt()} fps, limit $limit): stepped down to 1080p")
+                    break
+                }
+                delay(2_000)
+            }
+        }
     }
 
     private fun localVideoTrack(): LocalVideoTrack? =
@@ -436,6 +465,7 @@ class CallManager(
     private fun clear(reason: String? = null) {
         timeout?.cancel(); timeout = null
         roomJob?.cancel(); roomJob = null
+        qhdWatch?.cancel(); qhdWatch = null
         room?.let { r -> runCatching { r.disconnect() }; runCatching { r.release() } }
         room = null
         callKey = null

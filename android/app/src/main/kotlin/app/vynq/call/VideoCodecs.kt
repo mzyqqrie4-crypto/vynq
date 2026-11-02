@@ -96,9 +96,25 @@ object VideoSize {
         MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos.any { info ->
             info.isEncoder && (Build.VERSION.SDK_INT < 29 || info.isHardwareAccelerated) &&
                 info.supportedTypes.any { it.equals(mime, ignoreCase = true) } &&
-                info.getCapabilitiesForType(mime).videoCapabilities.let {
-                    it.areSizeAndRateSupported(W, H, 30.0) || it.areSizeAndRateSupported(H, W, 30.0)
-                }
+                info.getCapabilitiesForType(mime).videoCapabilities.let { fastEnough(it) }
         }
     }.getOrDefault(false)
+
+    /**
+     * Real speed, not the paper limit: a budget chip may "support" 1440p and still manage
+     * only 10-15 fps. Uses the vendor's performance points (Android 10+) or measured rates;
+     * with neither, assume no.
+     */
+    private fun fastEnough(v: MediaCodecInfo.VideoCapabilities): Boolean {
+        if (!v.areSizeAndRateSupported(W, H, 30.0) && !v.areSizeAndRateSupported(H, W, 30.0)) return false
+        if (Build.VERSION.SDK_INT >= 29) {
+            val points = v.supportedPerformancePoints
+            if (!points.isNullOrEmpty()) {
+                val need = MediaCodecInfo.VideoCapabilities.PerformancePoint(W, H, 30)
+                return points.any { it.covers(need) }
+            }
+        }
+        val measured = runCatching { v.getAchievableFrameRatesFor(W, H) ?: v.getAchievableFrameRatesFor(H, W) }.getOrNull()
+        return measured != null && measured.upper >= 30.0
+    }
 }
