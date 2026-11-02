@@ -425,10 +425,10 @@ class CallManager(
 
     /**
      * 1440p that this phone can't actually keep at a smooth frame rate looks worse than
-     * 1080p. Step the camera down to 1080p for the rest of the call when WebRTC says the
-     * processor is the limit for about 8 s, or the camera stays under 22 fps for 20 s for any
-     * reason but the network. Ignored while the camera is off (a muted camera sends
-     * almost nothing by design).
+     * 1080p. Step the camera down to 1080p for the rest of the call when the camera itself
+     * delivers under 22 fps for about 10 s (the network can't cause that), or WebRTC says
+     * the processor holds the frame rate under 22 for about 8 s. Ignored while the camera
+     * is off (a muted camera sends almost nothing by design).
      */
     private fun watchQhd(r: Room) {
         qhdWatch?.cancel()
@@ -437,17 +437,18 @@ class CallManager(
             delay(10_000)                       // let the encoder and bandwidth estimate settle
             var slow = 0
             while (isActive && room === r) {
-                val (fps, limit) = sampler.sending()
+                val now = sampler.sending()
                 val cameraOn = _state.value?.cameraOn == true
                 slow = when {
-                    !cameraOn || fps == null || fps >= 22 || limit == "bandwidth" -> 0
-                    limit == "cpu" -> slow + 3
-                    else -> slow + 1
+                    !cameraOn -> 0
+                    now.captured != null && now.captured < 22 -> slow + 2
+                    now.limit == "cpu" && now.sent != null && now.sent < 22 -> slow + 3
+                    else -> 0
                 }
                 if (slow >= 10) {
                     val track = localVideoTrack()
                     (track?.capturer as? CameraVideoCapturer)?.changeCaptureFormat(1920, 1080, 30)
-                    Log.i(TAG, "1440p too slow here (${fps?.toInt()} fps, limit $limit): stepped down to 1080p")
+                    Log.i(TAG, "1440p too slow here (camera ${now.captured?.toInt()} fps, sent ${now.sent?.toInt()} fps, limit ${now.limit}): stepped down to 1080p")
                     break
                 }
                 delay(2_000)
