@@ -27,7 +27,8 @@ import java.util.Locale
  *
  * Start from adb:
  * `adb shell am start -n app.vynq.fusion/.ProbeActivity --es mode both --ei minutes 10 --es label wifi-drop`
- * (mode: both | wifi | cell). The screen stays on while it runs.
+ * (mode: both | wifi | cell). The screen stays on while it runs. Run `adb shell am force-stop app.vynq.fusion`
+ * first if it's already open: a second start reaches the running screen and is ignored.
  */
 class ProbeActivity : Activity() {
     private val main = Handler(Looper.getMainLooper())
