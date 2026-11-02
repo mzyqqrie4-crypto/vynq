@@ -88,10 +88,13 @@ class StatsSampler(private val room: Room) {
         return "${w}×$h"
     }
 
-    private suspend fun report(fetch: (livekit.org.webrtc.RTCStatsCollectorCallback) -> Unit): RTCStatsReport? =
-        withTimeoutOrNull(2_000) {
-            suspendCancellableCoroutine { cont ->
-                runCatching { fetch { r -> if (cont.isActive) cont.resume(r) } }.onFailure { if (cont.isActive) cont.resume(null) }
-            }
-        }
+    private suspend fun report(fetch: (livekit.org.webrtc.RTCStatsCollectorCallback) -> Unit) = rtcReport(fetch)
 }
+
+/** One WebRTC stats report, or null if it doesn't come within 2 s. */
+suspend fun rtcReport(fetch: (livekit.org.webrtc.RTCStatsCollectorCallback) -> Unit): RTCStatsReport? =
+    withTimeoutOrNull(2_000) {
+        suspendCancellableCoroutine { cont ->
+            runCatching { fetch { r -> if (cont.isActive) cont.resume(r) } }.onFailure { if (cont.isActive) cont.resume(null) }
+        }
+    }

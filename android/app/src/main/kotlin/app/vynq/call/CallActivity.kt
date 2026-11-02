@@ -222,6 +222,14 @@ private fun SecurityBadge(s: CallState) {
                 style = VynqTheme.type.caption, color = if (s.endToEnd) Color(0xFF34D399) else Color.White.copy(alpha = 0.7f))
         }
     }
+    s.heatNotice?.let {
+        Spacer(Modifier.height(6.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(VynqIcons.Warning, null, Modifier.size(12.dp), tint = Color(0xFFFBBF24))
+            Spacer(Modifier.size(4.dp))
+            Text(it, style = VynqTheme.type.caption, color = Color(0xFFFBBF24))
+        }
+    }
 }
 
 @Composable
